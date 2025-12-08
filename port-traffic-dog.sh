@@ -1,9 +1,9 @@
 #!/bin/bash
-# v1.2.4.2 更新: 修复relay模式流量计算公式及quota配额规则，新增旧版数据一键更新功能 (by Eric86777)
+# v1.2.4.3 更新: 修复relay模式流量计算及quota规则，选项8自动刷新配额规则 (by Eric86777)
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.4.2"
+readonly SCRIPT_VERSION="1.2.4.3"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -2167,6 +2167,26 @@ migrate_from_old_version() {
         echo -e "${GREEN}✅ 所有端口都已使用 relay 模式，无需修复${NC}"
         echo
     fi
+    
+    # 刷新所有端口的 quota 规则
+    echo -e "${YELLOW}正在刷新配额规则（使新公式生效）...${NC}"
+    for port in "${ports[@]}"; do
+        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
+        local monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
+        local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // false" "$CONFIG_FILE")
+        
+        if [ "$quota_enabled" = "true" ] && [ "$monthly_limit" != "unlimited" ]; then
+            # 先删除旧规则
+            remove_nftables_quota "$port" >/dev/null 2>&1 || true
+            # 重新应用新规则
+            apply_nftables_quota "$port" "$monthly_limit"
+            echo -e "${GREEN}端口 $port 配额规则已刷新${NC}"
+        fi
+    done
+    echo
+    echo -e "${GREEN}✅ 配额规则刷新完成！${NC}"
+    echo "现在配额限制将按新公式 (In + Out) × 2 累加。"
+    echo
     
     read -p "按回车键返回主菜单..."
     show_main_menu
