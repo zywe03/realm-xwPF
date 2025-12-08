@@ -1,8 +1,9 @@
 #!/bin/bash
+# v1.2.4.1 更新: 修复relay模式流量计算公式，新增旧版数据一键更新功能 (by Eric86777)
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.4"
+readonly SCRIPT_VERSION="1.2.4.1"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -586,8 +587,10 @@ calculate_total_traffic() {
             echo $((input_bytes + output_bytes))
             ;;
         "relay")
-            # 代理/中转模式：估算入站=In+Out，总流量=估算入站+Out=In+2*Out
-            echo $((input_bytes + output_bytes * 2))
+            # 代理/中转模式：每个方向流量都会产生双倍网卡消耗
+            # 入站(用户请求)→转发出站, 目标返回入站→返回给用户出站
+            # 网卡总流量 = (入站 + 出站) × 2
+            echo $(( (input_bytes + output_bytes) * 2 ))
             ;;
         "single"|*)
             echo $output_bytes
@@ -823,12 +826,13 @@ format_port_list() {
         local output_formatted=$(format_bytes $output_bytes)
         local status_label=$(get_port_status_label "$port")
 
-        # relay模式：入站显示为估算值(In+Out)，出站保持原值
+        # relay模式：入站和出站都×2显示，反映真实网卡消耗
         if [ "$billing_mode" = "relay" ]; then
-            local input_estimated=$((input_bytes + output_bytes))
-            local input_formatted=$(format_bytes $input_estimated)
+            local input_formatted=$(format_bytes $((input_bytes * 2)))
+            local output_formatted=$(format_bytes $((output_bytes * 2)))
         else
             local input_formatted=$(format_bytes $input_bytes)
+            local output_formatted=$(format_bytes $output_bytes)
         fi
 
         if [ "$format_type" = "display" ]; then
@@ -875,10 +879,10 @@ show_main_menu() {
     echo -e "${BLUE}1.${NC} 添加/删除端口监控     ${BLUE}2.${NC} 端口限制设置管理"
     echo -e "${BLUE}3.${NC} 流量重置管理          ${BLUE}4.${NC} 一键导出/导入配置"
     echo -e "${BLUE}5.${NC} 安装依赖(更新)脚本    ${BLUE}6.${NC} 卸载脚本"
-    echo -e "${BLUE}7.${NC} 通知管理"
+    echo -e "${BLUE}7.${NC} 通知管理              ${BLUE}8.${NC} 旧版统计数据一键更新"
     echo -e "${BLUE}0.${NC} 退出"
     echo
-    read -p "请选择操作 [0-7]: " choice
+    read -p "请选择操作 [0-8]: " choice
 
     case $choice in
         1) manage_port_monitoring ;;
@@ -888,8 +892,9 @@ show_main_menu() {
         5) install_update_script ;;
         6) uninstall_script ;;
         7) manage_notifications ;;
+        8) migrate_from_old_version ;;
         0) exit 0 ;;
-        *) echo -e "${RED}无效选择，请输入0-7${NC}"; sleep 1; show_main_menu ;;
+        *) echo -e "${RED}无效选择，请输入0-8${NC}"; sleep 1; show_main_menu ;;
     esac
 }
 
@@ -2005,6 +2010,158 @@ record_reset_history() {
         tail -n 100 "$history_file" > "${history_file}.tmp"
         mv "${history_file}.tmp" "$history_file"
     fi
+}
+
+# 查看新旧公式对比（修复流量计算说明）
+migrate_from_old_version() {
+    echo -e "${BLUE}=== 流量计算公式修复说明 ===${NC}"
+    echo
+    echo -e "${GREEN}本脚本已修复 relay 模式的流量计算公式：${NC}"
+    echo
+    echo -e "${YELLOW}公式对比：${NC}"
+    echo "  旧版公式: In + 2×Out (不准确)"
+    echo "  新版公式: (In + Out) × 2 (与服务商一致)"
+    echo
+    echo -e "${GREEN}为什么新公式更准确？${NC}"
+    echo "  对于代理/中转场景，每个方向都会产生双倍网卡消耗："
+    echo "  - 入站流量(用户请求) → 转发出站(发给目标) = 2×入站"
+    echo "  - 出站流量(返回用户) ← 目标返回(收到数据) = 2×出站"
+    echo "  所以: 网卡总流量 = (入站 + 出站) × 2"
+    echo
+    
+    # 检查配置是否存在
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo -e "${YELLOW}未检测到配置文件，请先添加端口监控${NC}"
+        echo
+        read -p "按回车键返回..."
+        show_main_menu
+        return
+    fi
+    
+    # 读取配置中的端口列表
+    local ports=($(jq -r '.ports | keys[]' "$CONFIG_FILE" 2>/dev/null || true))
+    
+    if [ ${#ports[@]} -eq 0 ]; then
+        echo -e "${YELLOW}当前没有监控的端口${NC}"
+        read -p "按回车键返回..."
+        show_main_menu
+        return
+    fi
+    
+    echo "────────────────────────────────────────────────────────"
+    echo -e "${BLUE}当前端口的新旧公式对比：${NC}"
+    echo "────────────────────────────────────────────────────────"
+    
+    for port in "${ports[@]}"; do
+        local port_config=$(jq -r ".ports.\"$port\"" "$CONFIG_FILE")
+        local billing_mode=$(echo "$port_config" | jq -r '.billing_mode // "single"')
+        local remark=$(echo "$port_config" | jq -r '.remark // ""')
+        
+        # 从 nftables 读取当前计数器数据
+        local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE" 2>/dev/null || echo "port_traffic_monitor")
+        local family=$(jq -r '.nftables.family' "$CONFIG_FILE" 2>/dev/null || echo "inet")
+        
+        local input_bytes=0
+        local output_bytes=0
+        
+        if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+            local port_safe=$(echo "$port" | tr '-' '_')
+            input_bytes=$(nft list counter $family $table_name "port_${port_safe}_in" 2>/dev/null | grep -o 'bytes [0-9]*' | awk '{print $2}' || echo "0")
+            output_bytes=$(nft list counter $family $table_name "port_${port_safe}_out" 2>/dev/null | grep -o 'bytes [0-9]*' | awk '{print $2}' || echo "0")
+        else
+            input_bytes=$(nft list counter $family $table_name "port_${port}_in" 2>/dev/null | grep -o 'bytes [0-9]*' | awk '{print $2}' || echo "0")
+            output_bytes=$(nft list counter $family $table_name "port_${port}_out" 2>/dev/null | grep -o 'bytes [0-9]*' | awk '{print $2}' || echo "0")
+        fi
+        
+        input_bytes=${input_bytes:-0}
+        output_bytes=${output_bytes:-0}
+        
+        # 计算新旧公式的差异
+        local old_total=0
+        local new_total=0
+        
+        case $billing_mode in
+            "relay")
+                old_total=$((input_bytes + output_bytes * 2))
+                new_total=$(( (input_bytes + output_bytes) * 2 ))
+                ;;
+            "double")
+                old_total=$((input_bytes + output_bytes))
+                new_total=$((input_bytes + output_bytes))
+                ;;
+            *)
+                old_total=$output_bytes
+                new_total=$output_bytes
+                ;;
+        esac
+        
+        local input_fmt=$(format_bytes $input_bytes)
+        local output_fmt=$(format_bytes $output_bytes)
+        local old_total_fmt=$(format_bytes $old_total)
+        local new_total_fmt=$(format_bytes $new_total)
+        local diff_bytes=$((new_total - old_total))
+        local diff_fmt=$(format_bytes ${diff_bytes#-})
+        
+        echo -e "端口 ${GREEN}$port${NC} [模式: $billing_mode] ${remark:+[备注: $remark]}"
+        echo "  原始数据: 入站=$input_fmt, 出站=$output_fmt"
+        
+        if [ "$billing_mode" = "relay" ]; then
+            echo -e "  旧版总量: $old_total_fmt → 新版总量: ${GREEN}$new_total_fmt${NC}"
+            if [ $diff_bytes -ne 0 ]; then
+                if [ $diff_bytes -gt 0 ]; then
+                    echo -e "  差异: ${YELLOW}+$diff_fmt${NC} (新公式更准确)"
+                else
+                    echo -e "  差异: ${YELLOW}-$diff_fmt${NC}"
+                fi
+            fi
+        else
+            echo -e "  总流量: ${GREEN}$new_total_fmt${NC} (非relay模式，公式相同)"
+        fi
+        echo
+    done
+    
+    echo "────────────────────────────────────────────────────────"
+    echo
+    
+    # 检查是否有非relay模式的端口需要修复
+    local non_relay_ports=()
+    for port in "${ports[@]}"; do
+        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
+        if [ "$billing_mode" != "relay" ]; then
+            non_relay_ports+=("$port")
+        fi
+    done
+    
+    if [ ${#non_relay_ports[@]} -gt 0 ]; then
+        echo -e "${YELLOW}⚠️ 检测到 ${#non_relay_ports[@]} 个端口使用的不是 relay 模式：${NC}"
+        for port in "${non_relay_ports[@]}"; do
+            local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
+            echo "  端口 $port - 当前模式: $billing_mode"
+        done
+        echo
+        echo "如果这些端口是代理/中转节点，建议改成 relay 模式以获得准确统计。"
+        echo
+        read -p "是否将这些端口全部改成 relay 模式? [y/N]: " confirm
+        
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            for port in "${non_relay_ports[@]}"; do
+                update_config ".ports.\"$port\".billing_mode = \"relay\""
+                echo -e "${GREEN}端口 $port 已改为 relay 模式${NC}"
+            done
+            echo
+            echo -e "${GREEN}✅ 所有端口已修复为 relay 模式！${NC}"
+            echo "现在的总流量将按 (In + Out) × 2 公式计算。"
+        else
+            echo "已跳过修复"
+        fi
+        echo
+    else
+        echo -e "${GREEN}✅ 所有端口都已使用 relay 模式，无需修复${NC}"
+        echo
+    fi
+    
+    read -p "按回车键返回主菜单..."
+    show_main_menu
 }
 
 manage_configuration() {
