@@ -202,6 +202,31 @@ _make_relay_rule 1 8001
 out=$(list_rules_with_info "proxy")
 assert_contains "$out" "当前规则列表"
 
+test_that "mptcp mode reports no rules when only a non-rule .conf file exists"
+touch "${RULES_DIR}/other.conf"
+out=$(list_rules_with_info "mptcp")
+rc=$?
+assert_eq "1" "$rc"
+assert_contains "$out" "暂无转发规则"
+
+end_describe
+
+describe "get_rule_status_display"
+
+test_that "shows the MPTCP mode when set"
+MPTCP_MODE="both"
+PROXY_MODE="off"
+out=$(get_rule_status_display "standard" "")
+assert_contains "$out" "MPTCP:"
+unset MPTCP_MODE PROXY_MODE
+
+test_that "shows the Proxy mode when set"
+MPTCP_MODE="off"
+PROXY_MODE="v1_send"
+out=$(get_rule_status_display "standard" "")
+assert_contains "$out" "Proxy:"
+unset MPTCP_MODE PROXY_MODE
+
 end_describe
 
 describe "display_single_rule_info" _setup_rules_dir _teardown_rules_dir
@@ -230,6 +255,16 @@ _make_relay_rule 1 8001
 out=$(display_single_rule_info "${RULES_DIR}/rule-1.conf" "proxy")
 assert_contains "$out" "Proxy"
 
+test_that "mptcp mode on an exit (role 2) rule shows its forward target detail line"
+_make_exit_rule 2 8002
+out=$(display_single_rule_info "${RULES_DIR}/rule-2.conf" "mptcp")
+assert_contains "$out" "8002"
+
+test_that "proxy mode on an exit (role 2) rule shows its forward target detail line"
+_make_exit_rule 2 8002
+out=$(display_single_rule_info "${RULES_DIR}/rule-2.conf" "proxy")
+assert_contains "$out" "8002"
+
 end_describe
 
 describe "list_all_rules" _setup_rules_dir _teardown_rules_dir
@@ -242,6 +277,24 @@ test_that "lists an existing rule's details"
 _make_relay_rule 1 8001
 out=$(list_all_rules)
 assert_contains "$out" "relay-1"
+
+test_that "shows a disabled rule's 禁用 status"
+_make_relay_rule 1 8001 false
+out=$(list_all_rules)
+assert_contains "$out" "禁用"
+
+test_that "shows a rule's note when RULE_NOTE is set"
+_make_relay_rule 1 8001
+echo 'RULE_NOTE="hello"' >> "${RULES_DIR}/rule-1.conf"
+out=$(list_all_rules)
+assert_contains "$out" "备注:"
+assert_contains "$out" "hello"
+
+test_that "shows an exit rule's forward target"
+_make_exit_rule 2 8002
+out=$(list_all_rules)
+assert_contains "$out" "转发:"
+assert_contains "$out" "8002"
 
 end_describe
 

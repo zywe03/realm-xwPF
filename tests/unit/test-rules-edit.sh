@@ -304,4 +304,50 @@ assert_eq "hello world" "$RULE_NOTE"
 
 end_describe
 
+_setup_edit_menu() {
+    xwpf_lock_realm_config
+    xwpf_reset_mock_systemd_state
+    xwpf_seed_realm_service_file
+    INIT_SYSTEM="systemd"
+    RULES_DIR="$(mktemp -d /tmp/xwpftestrules.XXXXXX)"
+}
+
+_teardown_edit_menu() {
+    [ -n "${RULES_DIR:-}" ] && rm -rf "$RULES_DIR"
+    xwpf_unlock_realm_config
+}
+
+describe "edit_rule_interactive" _setup_edit_menu _teardown_edit_menu
+
+test_that "an empty rule ID is rejected"
+_make_relay_rule 1 8001
+out=$(edit_rule_interactive <<< "")
+assert_contains "$out" "未输入规则ID"
+
+test_that "a non-numeric rule ID is rejected"
+_make_relay_rule 1 8001
+out=$(edit_rule_interactive <<< "abc")
+assert_contains "$out" "无效的规则ID"
+
+test_that "a nonexistent rule ID is rejected"
+_make_relay_rule 1 8001
+out=$(edit_rule_interactive <<< "99")
+assert_contains "$out" "规则 99 不存在"
+
+test_that "a relay (role 1) rule dispatches to edit_nat_server_config and restarts the service"
+_make_relay_rule 1 8001
+out=$(edit_rule_interactive <<< "1")
+assert_contains "$out" "正在编辑规则: relay-1"
+assert_contains "$out" "配置已更新"
+assert_contains "$out" "正在重启服务以应用配置更改"
+
+test_that "an exit (role 2) rule dispatches to edit_exit_server_config and restarts the service"
+_make_exit_rule 1 8101
+out=$(edit_rule_interactive <<< "1")
+assert_contains "$out" "正在编辑规则: exit-1"
+assert_contains "$out" "配置已更新"
+assert_contains "$out" "正在重启服务以应用配置更改"
+
+end_describe
+
 ptyunit_test_summary
