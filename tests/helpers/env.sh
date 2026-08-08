@@ -50,9 +50,19 @@ xwpf_seed_installed_files() {
         return 1
     fi
     mkdir -p /usr/local/bin/lib
-    cp "$XWPF_REPO_ROOT"/lib/*.sh /usr/local/bin/lib/
-    cp "$XWPF_REPO_ROOT"/xwPF.sh /usr/local/bin/xwPF.sh
-    chmod +x /usr/local/bin/xwPF.sh
+    # Symlinked rather than copied: xwPF.sh's non-install entrypoint always
+    # sources from $INSTALL_DIR/lib, so pty_run.py's coverage tracer records
+    # hits against /usr/local/bin/lib/*.sh. coverage_report.py resolves each
+    # traced path with realpath() before matching it against --src, so a
+    # symlink back to the repo checkout is what lets integration-test runs
+    # actually count toward coverage. A real install would download
+    # independent copies, but the bytes sourced are identical either way —
+    # only the coverage tool's path-matching cares about the distinction.
+    for f in "$XWPF_REPO_ROOT"/lib/*.sh; do
+        ln -sf "$f" "/usr/local/bin/lib/$(basename "$f")"
+    done
+    ln -sf "$XWPF_REPO_ROOT/xwPF.sh" /usr/local/bin/xwPF.sh
+    chmod +x "$XWPF_REPO_ROOT/xwPF.sh"
     ln -sf /usr/local/bin/xwPF.sh /usr/local/bin/pf
 }
 
