@@ -158,12 +158,12 @@ safe_stop_realm_service() {
     local service_was_running=false
 
     if svc_is_active; then
-        echo -e "${BLUE}检测到realm服务正在运行，正在停止服务...${NC}"
+        echo -e "${BLUE}检测到realm服务正在运行，正在停止服务...${NC}" >&2
         if svc_stop >/dev/null 2>&1; then
-            echo -e "${GREEN}✓ realm服务已停止${NC}"
+            echo -e "${GREEN}✓ realm服务已停止${NC}" >&2
             service_was_running=true
         else
-            echo -e "${RED}✗ 停止realm服务失败，无法安全更新${NC}"
+            echo -e "${RED}✗ 停止realm服务失败，无法安全更新${NC}" >&2
             return 1
         fi
     fi
@@ -267,7 +267,8 @@ install_realm() {
     # 解压安装
     echo -e "${YELLOW}正在解压安装...${NC}"
 
-    local service_was_running=$(safe_stop_realm_service)
+    local service_was_running
+    service_was_running=$(safe_stop_realm_service)
     if [ $? -ne 0 ]; then
         return 1
     fi
