@@ -62,6 +62,17 @@ rm -f "$out_path"
 test_that "defaults to no_tcp=false, use_udp=true when no prior config exists"
 assert_contains "$(generate_network_config)" '"use_udp": true'
 
+test_that "falls back to a hardcoded default network block if generate_network_config ever returns empty"
+generate_network_config() { :; }
+out_path="$(mktemp /tmp/xwpf-test-config.XXXXXX.json)"
+generate_complete_config '{"listen":":8001"}' "$out_path"
+assert_contains "$(cat "$out_path")" '"no_tcp": false, "use_udp": true'
+rm -f "$out_path"
+# unset -f alone would leave the function undefined for the rest of this
+# file (there's no way to "pop" an override) — re-source to restore the
+# real generate_network_config for the tests that follow.
+source "$XWPF_REPO_ROOT/lib/core.sh"
+
 end_describe
 
 # generate_network_config hardcodes "/etc/realm/config.json" rather than

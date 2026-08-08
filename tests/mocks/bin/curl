@@ -14,6 +14,13 @@
 # path are served from the local checkout (XWPF_REPO_ROOT) so download+invoke flows for
 # companion scripts still get real coverage; every other URL fails immediately instead of
 # hitting the network, which exercises the same fallback paths a real offline host would.
+#
+# get_public_ip()'s two upstream lookups (ipinfo.io/ip, cloudflare's trace endpoint) are
+# opt-in via XWPF_MOCK_PUBLIC_IP: unset means "unreachable" (curl exit 7, the default,
+# real-offline-host behavior every other test relies on); set means both endpoints
+# succeed with that IP, in their real respective response shapes.
+# XWPF_MOCK_PUBLIC_IP_SKIP_IPINFO=1 forces ipinfo.io to stay unreachable even when
+# XWPF_MOCK_PUBLIC_IP is set, so tests can reach get_public_ip's cloudflare fallback.
 set -u
 
 REPO_ROOT="${XWPF_REPO_ROOT:?XWPF_REPO_ROOT must be set for the curl mock}"
@@ -54,9 +61,23 @@ case "$url" in
         fi
         exit 22
         ;;
+    https://ipinfo.io/ip)
+        if [ -n "${XWPF_MOCK_PUBLIC_IP:-}" ] && [ "${XWPF_MOCK_PUBLIC_IP_SKIP_IPINFO:-}" != "1" ]; then
+            echo "$XWPF_MOCK_PUBLIC_IP"
+            exit 0
+        fi
+        exit 7
+        ;;
+    https://www.cloudflare.com/cdn-cgi/trace)
+        if [ -n "${XWPF_MOCK_PUBLIC_IP:-}" ]; then
+            printf 'fl=1\nh=www.cloudflare.com\nip=%s\nts=0\n' "$XWPF_MOCK_PUBLIC_IP"
+            exit 0
+        fi
+        exit 7
+        ;;
     *)
         # Simulate "couldn't connect" (curl exit code 7) for anything real,
-        # e.g. github.com/.../releases, ipinfo.io, cloudflare trace.
+        # e.g. github.com/.../releases.
         exit 7
         ;;
 esac

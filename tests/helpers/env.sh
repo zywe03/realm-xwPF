@@ -128,6 +128,64 @@ WantedBy=multi-user.target
 EOF
 }
 
+# ptyunit/coverage.sh's unit-test runner enables tracing inline (plain,
+# unexported BASH_XTRACEFD/PS4 shell variables in the wrapper's own `bash -c`
+# invocation), so a test that forks a genuinely new bash process — e.g. via
+# `runuser`, which starts a fresh, untraced process tree — silently loses
+# coverage for everything that runs inside it. This mirrors pty_run.py's own
+# BASH_ENV recipe (keyed off the same $PTYUNIT_COVERAGE_FILE it exports) so
+# that new process traces too. PS4 must stay single-quoted here: double
+# quotes would expand $BASH_SOURCE/$LINENO once, at the instant this
+# BASH_ENV script itself is sourced, freezing PS4 to that one location
+# instead of leaving it as a live expression re-evaluated per traced line.
+xwpf_traced_env() {
+    [ -z "${PTYUNIT_COVERAGE_FILE:-}" ] && return 0
+    # coverage.sh's own mktemp leaves the trace file at mode 600, owned by
+    # whoever's running the test process — unwritable by a less-privileged
+    # user (e.g. check_root's runuser -u nobody) even with BASH_ENV/
+    # BASH_XTRACEFD correctly propagated.
+    chmod 666 "$PTYUNIT_COVERAGE_FILE" 2>/dev/null
+    _xwpf_bash_env="$(mktemp /tmp/xwpf-bashenv.XXXXXX.sh)"
+    cat > "$_xwpf_bash_env" <<EOF
+exec 9>>"$PTYUNIT_COVERAGE_FILE"
+export BASH_XTRACEFD=9
+PS4='+\${BASH_SOURCE:-?}:\${LINENO} '
+export PS4
+set -x
+EOF
+    # World-readable: this script may be sourced by a different, unprivileged
+    # user (e.g. check_root's runuser -u nobody test), and mktemp's default
+    # 600 mode would leave BASH_ENV pointing at a file that user can't read.
+    chmod 644 "$_xwpf_bash_env"
+    export BASH_ENV="$_xwpf_bash_env"
+}
+
+xwpf_traced_env_cleanup() {
+    unset BASH_ENV
+    [ -n "${_xwpf_bash_env:-}" ] && rm -f "$_xwpf_bash_env"
+    unset _xwpf_bash_env
+}
+
+# detect_system() reads the real /etc/os-release by hardcoded path (no
+# override hook), so exercising its DISTRO branches means temporarily
+# rewriting that real file. Safe only because detect_system is never called
+# by any other unit test file during the parallel unit phase (grep confirms
+# it's only reachable via smart_install()/main(), neither of which any unit
+# test invokes) and integration tests run later, sequentially. Always pair
+# with xwpf_restore_os_release in the same test, and back up via a describe-
+# level setup so a mid-test assertion failure can't skip the restore.
+xwpf_backup_os_release() {
+    if [ "${XWPF_ALLOW_SYSTEM_WRITES:-}" != "1" ]; then
+        echo "refusing to touch /etc/os-release: XWPF_ALLOW_SYSTEM_WRITES!=1" >&2
+        return 1
+    fi
+    cp /etc/os-release /tmp/xwpf-os-release.bak
+}
+
+xwpf_restore_os_release() {
+    [ -f /tmp/xwpf-os-release.bak ] && cp /tmp/xwpf-os-release.bak /etc/os-release
+}
+
 # Reset all real-path state the app touches, between integration test files.
 xwpf_clean_system_state() {
     if [ "${XWPF_ALLOW_SYSTEM_WRITES:-}" != "1" ]; then
