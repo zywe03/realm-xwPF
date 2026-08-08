@@ -111,6 +111,32 @@ result="$(cat /etc/realm/health/health_status.conf)"
 assert_contains "$result" "1|127.0.0.1:9000|healthy|0|3|2024-01-01|"
 rm -rf /etc/realm/health
 
+test_that "remaps an exit rule's old ID to its new ID by matching FORWARD_TARGET"
+_make_exit_rule 2 8002
+mkdir -p /etc/realm/health
+cat > /etc/realm/health/health_status.conf <<'EOF'
+7|127.0.0.1:9100|healthy|0|3|2024-01-01|
+EOF
+sync_health_status_ids
+result="$(cat /etc/realm/health/health_status.conf)"
+assert_contains "$result" "2|127.0.0.1:9100|healthy|0|3|2024-01-01|"
+rm -rf /etc/realm/health
+
+end_describe
+
+describe "reorder_rule_ids" _setup_rules_dir _teardown_rules_dir
+
+test_that "returns immediately when RULES_DIR does not exist"
+_real_rules_dir="$RULES_DIR"
+RULES_DIR="/tmp/xwpf-no-such-rules-dir-$$"
+assert_true reorder_rule_ids
+RULES_DIR="$_real_rules_dir"
+
+test_that "treats a directory entry matching rule-*.conf as unreadable, leaving an empty sorted list"
+mkdir "${RULES_DIR}/rule-1.conf"
+assert_true reorder_rule_ids
+rmdir "${RULES_DIR}/rule-1.conf"
+
 end_describe
 
 describe "get_balance_info_display"
@@ -384,9 +410,33 @@ assert_contains "$out" "已同步更新"
 read_rule_file "${RULES_DIR}/rule-3.conf"
 assert_eq "roundrobin" "$BALANCE_MODE"
 
+test_that "interactively deleting a balance-mode rule with only 1 target left warns about the group and auto-disables balance mode"
+cat > "${RULES_DIR}/rule-4.conf" <<'EOF'
+RULE_ID=4
+RULE_NAME=lb-4
+LISTEN_PORT=9002
+RULE_ROLE=1
+REMOTE_HOST=1.1.1.1
+REMOTE_PORT=80
+ENABLED=true
+BALANCE_MODE=roundrobin
+TARGET_STATES=target_0:true
+WEIGHTS=1
+EOF
+out=$(delete_rule 4 <<< "y")
+assert_contains "$out" "此规则属于负载均衡组"
+assert_contains "$out" "只剩1个目标，自动关闭负载均衡模式"
+assert_false test -f "${RULES_DIR}/rule-4.conf"
+
 end_describe
 
 describe "batch_delete_rules" _setup_rules_dir _teardown_rules_dir
+
+test_that "fails when given an empty rule ID list"
+out=$(batch_delete_rules "")
+rc=$?
+assert_eq "1" "$rc"
+assert_contains "$out" "没有找到有效的规则ID"
 
 test_that "fails immediately when any ID is invalid"
 _make_relay_rule 1 8001
