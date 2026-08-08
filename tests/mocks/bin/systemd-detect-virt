@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Mock systemd-detect-virt: this sandbox's base image has no real systemd,
+# so the real binary is never on PATH. detect_virtualization() only reaches
+# this check once /.dockerenv is out of the way (see xwpf_hide_dockerenv in
+# tests/helpers/env.sh) and only cares about the printed detection string.
+if [ -n "${XWPF_MOCK_VIRT:-}" ]; then
+    echo "$XWPF_MOCK_VIRT"
+    exit 0
+fi
+exit 1

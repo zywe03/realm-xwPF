@@ -33,10 +33,24 @@ case "$cmd" in
         exit 0
         ;;
     stop)
+        # Opt-in failure, for exercising safe_stop_realm_service()'s "stop
+        # failed, can't safely update" branch.
+        if [ -n "${XWPF_MOCK_SYSTEMCTL_STOP_FAIL:-}" ]; then
+            echo "Failed to stop ${unit}.service: mock failure" >&2
+            exit 1
+        fi
         rm -f "$STATE_DIR/${unit}.active"
         exit 0
         ;;
     restart)
+        # Opt-in failure, for exercising service_restart()'s "restart failed,
+        # show status detail" branch without depending on the shared real
+        # unit-file's presence/absence — other unit test files running in
+        # parallel also seed/remove that same file.
+        if [ -n "${XWPF_MOCK_SYSTEMCTL_RESTART_FAIL:-}" ]; then
+            echo "Failed to restart ${unit}.service: mock failure" >&2
+            exit 1
+        fi
         if [ ! -f "$unit_file" ]; then
             echo "Failed to restart ${unit}.service: Unit ${unit}.service not found." >&2
             exit 5

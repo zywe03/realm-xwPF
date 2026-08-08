@@ -68,6 +68,21 @@ case "$url" in
         fi
         exit 7
         ;;
+    https://github.com/zhboner/realm/releases/download/*)
+        # install_realm()'s auto-download path. Opt-in via
+        # XWPF_MOCK_REALM_DOWNLOAD=/path/to/tarball so most tests (which
+        # want the real, mocked-offline "download failed" behavior every
+        # other host-without-network test relies on) are unaffected.
+        if [ -n "${XWPF_MOCK_REALM_DOWNLOAD:-}" ] && [ -f "$XWPF_MOCK_REALM_DOWNLOAD" ]; then
+            if [ -n "$outfile" ]; then
+                cp "$XWPF_MOCK_REALM_DOWNLOAD" "$outfile"
+            else
+                cat "$XWPF_MOCK_REALM_DOWNLOAD"
+            fi
+            exit 0
+        fi
+        exit 7
+        ;;
     https://www.cloudflare.com/cdn-cgi/trace)
         if [ -n "${XWPF_MOCK_PUBLIC_IP:-}" ]; then
             printf 'fl=1\nh=www.cloudflare.com\nip=%s\nts=0\n' "$XWPF_MOCK_PUBLIC_IP"

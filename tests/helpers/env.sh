@@ -186,6 +186,45 @@ xwpf_restore_os_release() {
     [ -f /tmp/xwpf-os-release.bak ] && cp /tmp/xwpf-os-release.bak /etc/os-release
 }
 
+# detect_virtualization() checks /.dockerenv (hardcoded, no override hook)
+# before it ever falls through to the systemd-detect-virt mock, so exercising
+# the systemd-detect-virt branches means moving the real marker file aside.
+# It doesn't get recreated once removed, so restoring is a plain mv back.
+xwpf_hide_dockerenv() {
+    if [ "${XWPF_ALLOW_SYSTEM_WRITES:-}" != "1" ]; then
+        echo "refusing to touch /.dockerenv: XWPF_ALLOW_SYSTEM_WRITES!=1" >&2
+        return 1
+    fi
+    [ -f /.dockerenv ] && mv /.dockerenv /tmp/xwpf-dockerenv.bak
+}
+
+xwpf_restore_dockerenv() {
+    [ -f /tmp/xwpf-dockerenv.bak ] && mv /tmp/xwpf-dockerenv.bak /.dockerenv
+}
+
+# /etc/realm/config.json (and, by extension, /usr/local/bin/realm — the two
+# are only ever written together by install_realm/restart_realm_service) are
+# real, hardcoded paths (no override hook) that several *different* unit
+# test files write/read directly or indirectly (install_realm,
+# generate_realm_config, start_empty_service, service_restart,
+# generate_network_config's real-config fixture, show_brief_status). Those
+# files run in different parallel worker processes during the unit phase, so
+# without serializing access, one test's write can silently clobber another's
+# in-flight fixture. Any test whose setup/teardown touches either path should
+# hold this lock for the duration of the test. flock(1) blocks until the
+# fd is available, so this only slows down the rare overlapping case instead
+# of racing.
+xwpf_lock_realm_config() {
+    exec {XWPF_REALM_CONFIG_LOCK_FD}>/tmp/xwpf-realm-config.lock
+    flock "$XWPF_REALM_CONFIG_LOCK_FD"
+}
+
+xwpf_unlock_realm_config() {
+    [ -n "${XWPF_REALM_CONFIG_LOCK_FD:-}" ] && flock -u "$XWPF_REALM_CONFIG_LOCK_FD" 2>/dev/null
+    [ -n "${XWPF_REALM_CONFIG_LOCK_FD:-}" ] && exec {XWPF_REALM_CONFIG_LOCK_FD}>&-
+    unset XWPF_REALM_CONFIG_LOCK_FD
+}
+
 # Reset all real-path state the app touches, between integration test files.
 xwpf_clean_system_state() {
     if [ "${XWPF_ALLOW_SYSTEM_WRITES:-}" != "1" ]; then
