@@ -123,6 +123,19 @@ _make_relay_rule 2 8001 "10.0.0.2" "roundrobin" "5,5"
 out=$(load_balance_management_menu <<< "$(printf '2\n\n0\n')")
 assert_contains "$out" "权重配置管理"
 
+test_that "choice 3 dispatches into failover_management_menu and returns to the outer loop"
+_make_relay_rule 1 8001 "10.0.0.1" "roundrobin" "5,5"
+_make_relay_rule 2 8001 "10.0.0.2" "roundrobin" "5,5"
+out=$(load_balance_management_menu <<< "$(printf '3\n\n0\n')")
+assert_contains "$out" "故障转移"
+
+test_that "a port group with balance mode off still lists targets, without weight percentages"
+_make_relay_rule 1 8001 "10.0.0.1" "off" "5,5"
+_make_relay_rule 2 8001 "10.0.0.2" "off" "5,5"
+out=$(load_balance_management_menu <<< "0")
+assert_contains "$out" "10.0.0.1:9000"
+assert_not_contains "$out" "权重:"
+
 end_describe
 
 describe "switch_balance_mode" _setup_rules_dir _teardown_rules_dir
@@ -170,6 +183,13 @@ out=$(switch_balance_mode <<< "$(printf '1\n1\n')")
 assert_contains "$out" "更新为: 关闭"
 read_rule_file "${RULES_DIR}/rule-1.conf"
 assert_eq "off" "$BALANCE_MODE"
+
+test_that "a single rule with a comma-separated REMOTE_HOST is treated as a multi-target group"
+_make_relay_rule 1 8001 "10.0.0.1,10.0.0.2"
+xwpf_seed_realm_service_file
+out=$(switch_balance_mode <<< "$(printf '1\n2\n')")
+assert_contains "$out" "2个目标服务器"
+assert_contains "$out" "更新为: 轮询"
 
 test_that "shows the iphash label for a group already in iphash mode and can select iphash again"
 _make_relay_rule 1 8001 "10.0.0.1" "iphash"
