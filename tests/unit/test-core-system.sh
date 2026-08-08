@@ -10,6 +10,20 @@ source "$TESTS_DIR/ptyunit/assert.sh"
 source "$TESTS_DIR/helpers/env.sh"
 source "$XWPF_REPO_ROOT/lib/core.sh"
 
+describe "check_root"
+
+test_that "exits 1 with an error message when not run as root"
+# check_root calls exit directly, so it must run in a child process (not
+# this test process) to observe its exit code. runuser invokes the given
+# command directly rather than the target user's login shell, so it works
+# even though nobody's shell is /usr/sbin/nologin.
+out=$(runuser -u nobody -- bash -c "source '$XWPF_REPO_ROOT/lib/core.sh'; check_root" 2>&1)
+rc=$?
+assert_eq "1" "$rc"
+assert_contains "$out" "需要 root 权限"
+
+end_describe
+
 describe "detect_system"
 
 test_that "identifies this container as Debian/apt-get/systemd"
@@ -17,6 +31,23 @@ detect_system
 assert_eq "debian" "$DISTRO"
 assert_eq "apt-get" "$PKG_MGR"
 assert_eq "systemd" "$INIT_SYSTEM"
+
+test_that "exits 1 when no supported package manager is on PATH"
+stub_bin="$(mktemp -d /tmp/xwpf-stubbin.XXXXXX)"
+out=$(PATH="$stub_bin" detect_system 2>&1)
+rc=$?
+assert_eq "1" "$rc"
+assert_contains "$out" "未找到支持的包管理器"
+rm -rf "$stub_bin"
+
+test_that "exits 1 when no supported init system is on PATH"
+stub_bin="$(mktemp -d /tmp/xwpf-stubbin.XXXXXX)"
+ln -s "$(command -v apt-get)" "$stub_bin/apt-get"
+out=$(PATH="$stub_bin" detect_system 2>&1)
+rc=$?
+assert_eq "1" "$rc"
+assert_contains "$out" "未找到支持的 init 系统"
+rm -rf "$stub_bin"
 
 end_describe
 

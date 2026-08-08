@@ -48,12 +48,51 @@ end_describe
 
 describe "get_transport_config: tls_ca"
 
+test_that "relay side (role 1) uses sni with default SNI"
+assert_eq '"remote_transport": "tls;sni=www.tesla.com"' \
+    "$(get_transport_config "tls_ca" "" "" "" "1" "" "")"
+
+test_that "relay side (role 1) honors a custom sni"
+assert_eq '"remote_transport": "tls;sni=example.com"' \
+    "$(get_transport_config "tls_ca" "example.com" "" "" "1" "" "")"
+
 test_that "exit side is empty without cert/key paths"
 assert_eq "" "$(get_transport_config "tls_ca" "" "" "" "2" "" "")"
 
 test_that "exit side includes cert/key once both are provided"
 assert_eq '"listen_transport": "tls;cert=/etc/realm/cert.pem;key=/etc/realm/key.pem"' \
     "$(get_transport_config "tls_ca" "" "/etc/realm/cert.pem" "/etc/realm/key.pem" "2" "" "")"
+
+end_describe
+
+describe "get_transport_config: ws_tls_self"
+
+test_that "relay side (role 1) is insecure with default host/path/sni"
+assert_eq '"remote_transport": "ws;host=www.tesla.com;path=/ws;tls;sni=www.tesla.com;insecure"' \
+    "$(get_transport_config "ws_tls_self" "" "" "" "1" "" "")"
+
+test_that "exit side (role 2) uses servername with default host/path/sni"
+assert_eq '"listen_transport": "ws;host=www.tesla.com;path=/ws;tls;servername=www.tesla.com"' \
+    "$(get_transport_config "ws_tls_self" "" "" "" "2" "" "")"
+
+test_that "honors custom ws host/path and sni"
+assert_eq '"remote_transport": "ws;host=example.com;path=/custom;tls;sni=sni.example.com;insecure"' \
+    "$(get_transport_config "ws_tls_self" "sni.example.com" "" "" "1" "/custom" "example.com")"
+
+end_describe
+
+describe "get_transport_config: ws_tls_ca"
+
+test_that "relay side (role 1) uses sni with default host/path/sni"
+assert_eq '"remote_transport": "ws;host=www.tesla.com;path=/ws;tls;sni=www.tesla.com"' \
+    "$(get_transport_config "ws_tls_ca" "" "" "" "1" "" "")"
+
+test_that "exit side is empty without cert/key paths"
+assert_eq "" "$(get_transport_config "ws_tls_ca" "" "" "" "2" "" "")"
+
+test_that "exit side includes cert/key once both are provided"
+assert_eq '"listen_transport": "ws;host=www.tesla.com;path=/ws;tls;cert=/etc/realm/cert.pem;key=/etc/realm/key.pem"' \
+    "$(get_transport_config "ws_tls_ca" "" "/etc/realm/cert.pem" "/etc/realm/key.pem" "2" "" "")"
 
 end_describe
 

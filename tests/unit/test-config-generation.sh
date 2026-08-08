@@ -64,4 +64,54 @@ assert_contains "$(generate_network_config)" '"use_udp": true'
 
 end_describe
 
+# generate_network_config hardcodes "/etc/realm/config.json" rather than
+# accepting a path argument, so exercising the merge branch means writing to
+# that real path — guarded by XWPF_ALLOW_SYSTEM_WRITES like the other real
+# system-path fixtures in tests/helpers/env.sh.
+_setup_real_config() {
+    if [ "${XWPF_ALLOW_SYSTEM_WRITES:-}" != "1" ]; then
+        echo "refusing to write to /etc/realm: XWPF_ALLOW_SYSTEM_WRITES!=1" >&2
+        return 1
+    fi
+    mkdir -p /etc/realm
+}
+_teardown_real_config() {
+    rm -f /etc/realm/config.json
+}
+
+describe "generate_network_config: merges an existing proxy protocol config" _setup_real_config _teardown_real_config
+
+test_that "carries forward send_proxy settings from an existing config.json"
+cat > /etc/realm/config.json <<'EOF'
+{
+    "network": {
+        "no_tcp": false,
+        "use_udp": true,
+        "send_proxy": true,
+        "send_proxy_version": 2
+    },
+    "endpoints": []
+}
+EOF
+out="$(generate_network_config)"
+assert_contains "$out" '"send_proxy": true'
+assert_contains "$out" '"send_proxy_version": 2'
+assert_contains "$out" '"use_udp": true'
+
+test_that "falls back to the base network when the existing config has no proxy fields"
+cat > /etc/realm/config.json <<'EOF'
+{
+    "network": {
+        "no_tcp": false,
+        "use_udp": true
+    },
+    "endpoints": []
+}
+EOF
+out="$(generate_network_config)"
+assert_contains "$out" '"use_udp": true'
+assert_not_contains "$out" "send_proxy"
+
+end_describe
+
 ptyunit_test_summary
