@@ -165,6 +165,13 @@ assert_eq "v2_both" "$PROXY_MODE"
 read_rule_file "${RULES_DIR}/rule-2.conf"
 assert_eq "v2_both" "$PROXY_MODE"
 
+test_that "reports a failure message when the post-update service restart fails"
+_make_relay_rule 1 8001
+xwpf_seed_realm_service_file
+out=$(XWPF_MOCK_SYSTEMCTL_RESTART_FAIL=1 batch_set_proxy_mode "1" "3" "3" <<< "y")
+assert_contains "$out" "成功设置 1 个规则的Proxy模式"
+assert_contains "$out" "服务重启失败，请检查配置"
+
 end_describe
 
 describe "restart_service_for_proxy" _setup_rules_dir _teardown_rules_dir

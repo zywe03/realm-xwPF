@@ -105,6 +105,21 @@ assert_eq "v2_both" "$PROXY_MODE"
 read_rule_file "${RULES_DIR}/rule-2.conf"
 assert_eq "v2_both" "$PROXY_MODE"
 
+test_that "version choice 1 (off) with a comma-separated rule ID list dispatches batch_set_proxy_mode with off"
+_make_relay_rule 1 8001
+_make_relay_rule 2 8002
+out=$(proxy_management_menu <<< "$(printf '1,2\n1\ny\n\n\n')")
+assert_contains "$out" "成功设置 2 个规则的Proxy模式"
+read_rule_file "${RULES_DIR}/rule-1.conf"
+assert_eq "off" "$PROXY_MODE"
+read_rule_file "${RULES_DIR}/rule-2.conf"
+assert_eq "off" "$PROXY_MODE"
+
+test_that "a non-numeric, non-comma rule ID is rejected as invalid after choosing a version and direction"
+_make_relay_rule 1 8001
+out=$(proxy_management_menu <<< "$(printf 'abc\n3\n3\n\n\n')")
+assert_contains "$out" "无效的规则ID"
+
 end_describe
 
 ptyunit_test_summary

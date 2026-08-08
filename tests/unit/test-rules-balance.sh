@@ -17,7 +17,7 @@ source "$XWPF_REPO_ROOT/lib/ui.sh"
 INIT_SYSTEM="systemd"
 
 _make_relay_rule() {
-    local id="$1" port="$2" host="$3" balance_mode="${4:-off}" weights="${5:-}"
+    local id="$1" port="$2" host="$3" balance_mode="${4:-off}" weights="${5:-}" failover="${6:-false}"
     cat > "${RULES_DIR}/rule-${id}.conf" <<EOF
 RULE_ID=${id}
 RULE_NAME=relay-${id}
@@ -31,6 +31,7 @@ BALANCE_MODE=${balance_mode}
 TARGET_STATES=
 WEIGHTS=${weights}
 PROXY_MODE=off
+FAILOVER_ENABLED=${failover}
 EOF
 }
 
@@ -65,6 +66,44 @@ assert_contains "$out" "端口 8001"
 assert_contains "$out" "2个服务器"
 assert_contains "$out" "10.0.0.1:9000"
 assert_contains "$out" "10.0.0.2:9000"
+
+test_that "a single rule with a comma-separated REMOTE_HOST is treated as a multi-target group"
+_make_relay_rule 1 8001 "10.0.0.1,10.0.0.2" "roundrobin" "5,5"
+out=$(load_balance_management_menu <<< "0")
+assert_contains "$out" "端口 8001"
+assert_contains "$out" "2个服务器"
+assert_contains "$out" "10.0.0.1:9000"
+assert_contains "$out" "10.0.0.2:9000"
+
+test_that "a single non-comma weight value is applied uniformly across all targets in the group"
+_make_relay_rule 1 8001 "10.0.0.1" "roundrobin" "5"
+_make_relay_rule 2 8001 "10.0.0.2" "roundrobin" "5"
+out=$(load_balance_management_menu <<< "0")
+assert_contains "$out" "权重: 5"
+
+test_that "a total weight of zero falls back to displaying 100.0 percent"
+_make_relay_rule 1 8001 "10.0.0.1" "roundrobin" "0,0"
+_make_relay_rule 2 8001 "10.0.0.2" "roundrobin" "0,0"
+out=$(load_balance_management_menu <<< "0")
+assert_contains "$out" "(100.0%)"
+
+test_that "shows a healthy failover badge when failover is enabled and no failure is recorded"
+_make_relay_rule 1 8001 "10.0.0.1" "roundrobin" "5,5" "true"
+_make_relay_rule 2 8001 "10.0.0.2" "roundrobin" "5,5" "true"
+mkdir -p /etc/realm/health
+echo "1|10.0.0.1|healthy|0|3|2024-01-01|" > /etc/realm/health/health_status.conf
+out=$(load_balance_management_menu <<< "0")
+assert_contains "$out" "[健康]"
+rm -rf /etc/realm/health
+
+test_that "shows a failed failover badge when the health status file records a failure"
+_make_relay_rule 1 8001 "10.0.0.1" "roundrobin" "5,5" "true"
+_make_relay_rule 2 8001 "10.0.0.2" "roundrobin" "5,5" "true"
+mkdir -p /etc/realm/health
+echo "1|10.0.0.1|failed|3|0|2024-01-01|" > /etc/realm/health/health_status.conf
+out=$(load_balance_management_menu <<< "0")
+assert_contains "$out" "[故障]"
+rm -rf /etc/realm/health
 
 test_that "an invalid menu choice is rejected and re-prompts"
 _make_relay_rule 1 8001 "10.0.0.1" "roundrobin" "5,5"
@@ -132,6 +171,23 @@ assert_contains "$out" "更新为: 关闭"
 read_rule_file "${RULES_DIR}/rule-1.conf"
 assert_eq "off" "$BALANCE_MODE"
 
+test_that "shows the iphash label for a group already in iphash mode and can select iphash again"
+_make_relay_rule 1 8001 "10.0.0.1" "iphash"
+_make_relay_rule 2 8001 "10.0.0.2" "iphash"
+xwpf_seed_realm_service_file
+out=$(switch_balance_mode <<< "$(printf '1\n3\n')")
+assert_contains "$out" "[IP哈希]"
+assert_contains "$out" "更新为: IP哈希"
+read_rule_file "${RULES_DIR}/rule-1.conf"
+assert_eq "iphash" "$BALANCE_MODE"
+
+test_that "reports a failure message when the post-update service restart fails"
+_make_relay_rule 1 8001 "10.0.0.1"
+_make_relay_rule 2 8001 "10.0.0.2"
+xwpf_seed_realm_service_file
+out=$(XWPF_MOCK_SYSTEMCTL_RESTART_FAIL=1 switch_balance_mode <<< "$(printf '1\n2\n')")
+assert_contains "$out" "服务重启失败，请检查配置"
+
 end_describe
 
 describe "weight_management_menu" _setup_rules_dir _teardown_rules_dir
@@ -154,6 +210,24 @@ _make_relay_rule 1 8001 "10.0.0.1" "roundrobin" "5,5"
 _make_relay_rule 2 8001 "10.0.0.2" "roundrobin" "5,5"
 out=$(weight_management_menu <<< "$(printf '99\n\n')")
 assert_contains "$out" "无效"
+
+test_that "prefers a later rule's full comma weights over an earlier rule's single weight"
+_make_relay_rule 1 8001 "10.0.0.1" "roundrobin" ""
+_make_relay_rule 2 8001 "10.0.0.2" "roundrobin" "5,5"
+out=$(weight_management_menu <<< "")
+assert_contains "$out" "[roundrobin]"
+
+test_that "a single rule with a comma-separated REMOTE_HOST counts as a multi-target group"
+_make_relay_rule 1 8001 "10.0.0.1,10.0.0.2" "roundrobin" "5,5"
+out=$(weight_management_menu <<< "")
+assert_contains "$out" "2个目标服务器"
+
+test_that "selecting a valid rule number dispatches into configure_port_group_weights"
+_make_relay_rule 1 8001 "10.0.0.1" "roundrobin" "5,5"
+_make_relay_rule 2 8001 "10.0.0.2" "roundrobin" "5,5"
+out=$(weight_management_menu <<< "$(printf '1\n2,8\nn\n')")
+assert_contains "$out" "配置预览"
+assert_contains "$out" "已取消配置更改"
 
 end_describe
 

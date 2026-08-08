@@ -137,6 +137,11 @@ mkdir "${RULES_DIR}/rule-1.conf"
 assert_true reorder_rule_ids
 rmdir "${RULES_DIR}/rule-1.conf"
 
+test_that "a broken symlink matching rule-*.conf counts toward rule_count but is skipped, leaving sorted_rules empty"
+ln -s "${RULES_DIR}/does-not-exist" "${RULES_DIR}/rule-1.conf"
+assert_true reorder_rule_ids
+rm -f "${RULES_DIR}/rule-1.conf"
+
 end_describe
 
 describe "get_balance_info_display"

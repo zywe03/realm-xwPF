@@ -78,6 +78,22 @@ assert_eq "2" "$(ls "${extract_dir}/xwPF_config/rules"/rule-*.conf | wc -l)"
 assert_true test -f "${extract_dir}/xwPF_config/manager.conf"
 rm -rf "$extract_dir"
 
+test_that "includes the health status file and MPTCP sysctl config when present"
+_make_relay_rule 1 8001
+HEALTH_STATUS_FILE="$(mktemp /tmp/xwpf-health.XXXXXX)"
+echo "1|127.0.0.1:9000|healthy|0|3|2024-01-01|" > "$HEALTH_STATUS_FILE"
+mkdir -p /etc/sysctl.d
+echo "net.mptcp.enabled=1" > /etc/sysctl.d/90-enable-MPTCP.conf
+out=$(export_config_package <<< "y")
+export_path=$(ls /usr/local/bin/xwPF_config_*.tar.gz 2>/dev/null | head -1)
+extract_dir="$(mktemp -d)"
+tar -xzf "$export_path" -C "$extract_dir"
+assert_true test -f "${extract_dir}/xwPF_config/health_status.conf"
+assert_true test -f "${extract_dir}/xwPF_config/90-enable-MPTCP.conf"
+rm -rf "$extract_dir"
+rm -f /etc/sysctl.d/90-enable-MPTCP.conf "$HEALTH_STATUS_FILE"
+unset HEALTH_STATUS_FILE
+
 end_describe
 
 describe "export_config_with_view" _setup _teardown
@@ -175,6 +191,79 @@ assert_contains "$out" "配置导入成功，共恢复 2 个规则"
 assert_true test -f "${RULES_DIR}/rule-1.conf"
 assert_true test -f "${RULES_DIR}/rule-2.conf"
 assert_false test -f "${RULES_DIR}/rule-9.conf"
+
+test_that "restores manager.conf, health status file, and MPTCP sysctl config on import"
+_make_relay_rule 1 8001
+echo "MANAGER_STATE=test" > "$MANAGER_CONF"
+HEALTH_STATUS_FILE="$(mktemp /tmp/xwpf-health.XXXXXX)"
+echo "1|127.0.0.1:9000|healthy|0|3|2024-01-01|" > "$HEALTH_STATUS_FILE"
+mkdir -p /etc/sysctl.d
+echo "net.mptcp.enabled=1" > /etc/sysctl.d/90-enable-MPTCP.conf
+export_config_package <<< "y" >/dev/null
+export_path=$(ls /usr/local/bin/xwPF_config_*.tar.gz 2>/dev/null | head -1)
+rm -f "$MANAGER_CONF" "$HEALTH_STATUS_FILE" /etc/sysctl.d/90-enable-MPTCP.conf
+xwpf_seed_realm_service_file
+out=$(import_config_package <<< "$(printf '%s\ny\n' "$export_path")")
+assert_true test -f "$MANAGER_CONF"
+assert_true test -f "$HEALTH_STATUS_FILE"
+assert_true test -f /etc/sysctl.d/90-enable-MPTCP.conf
+rm -f /etc/sysctl.d/90-enable-MPTCP.conf "$HEALTH_STATUS_FILE"
+unset HEALTH_STATUS_FILE
+
+test_that "restores MPTCP endpoint configuration when the package includes it"
+work_dir="$(mktemp -d)"
+mkdir -p "${work_dir}/xwPF_config/rules"
+cat > "${work_dir}/xwPF_config/metadata.txt" <<EOF
+EXPORT_TIME="2024-01-01 00:00:00"
+SCRIPT_VERSION="1.0"
+RULES_COUNT=1
+PACKAGE_VERSION=1.0
+HAS_MANAGER_CONF=false
+EOF
+cat > "${work_dir}/xwPF_config/rules/rule-1.conf" <<EOF
+RULE_ID=1
+RULE_NAME=relay-1
+LISTEN_PORT=8001
+RULE_ROLE=1
+REMOTE_HOST=127.0.0.1
+REMOTE_PORT=9000
+ENABLED=true
+SECURITY_LEVEL=standard
+BALANCE_MODE=off
+TARGET_STATES=
+WEIGHTS=
+PROXY_MODE=off
+EOF
+cat > "${work_dir}/xwPF_config/mptcp_endpoints.conf" <<EOF
+10.0.0.5 dev eth0 subflow fullmesh
+10.0.0.6 dev eth1 subflow backup
+10.0.0.7 dev eth2 signal
+EOF
+tar_file="$(mktemp --suffix=.tar.gz)"
+tar -czf "$tar_file" -C "$work_dir" xwPF_config
+rm -rf "$work_dir"
+xwpf_seed_realm_service_file
+out=$(import_config_package <<< "$(printf '%s\ny\n' "$tar_file")")
+assert_contains "$out" "MPTCP端点配置"
+assert_true test -f "${RULES_DIR}/rule-1.conf"
+rm -f "$tar_file"
+
+test_that "reports import failure when the package contains no rules"
+work_dir="$(mktemp -d)"
+mkdir -p "${work_dir}/xwPF_config"
+cat > "${work_dir}/xwPF_config/metadata.txt" <<EOF
+EXPORT_TIME="2024-01-01 00:00:00"
+SCRIPT_VERSION="1.0"
+RULES_COUNT=0
+PACKAGE_VERSION=1.0
+HAS_MANAGER_CONF=false
+EOF
+tar_file="$(mktemp --suffix=.tar.gz)"
+tar -czf "$tar_file" -C "$work_dir" xwPF_config
+rm -rf "$work_dir"
+out=$(import_config_package <<< "$(printf '%s\ny\n' "$tar_file")")
+assert_contains "$out" "配置导入失败"
+rm -f "$tar_file"
 
 end_describe
 

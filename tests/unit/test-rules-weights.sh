@@ -53,6 +53,12 @@ _make_relay_rule 2 8001 "10.0.0.2" "5,5"
 out=$(configure_port_group_weights "8001" "relay-1" "10.0.0.1:9000,10.0.0.2:9000" "5,5" <<< "")
 assert_contains "$out" "未输入权重，保持原配置"
 
+test_that "an empty current-weights string defaults to equal weight 1 for every target"
+_make_relay_rule 1 8001 "10.0.0.1" ""
+_make_relay_rule 2 8001 "10.0.0.2" ""
+out=$(configure_port_group_weights "8001" "relay-1" "10.0.0.1:9000,10.0.0.2:9000" "" <<< "")
+assert_contains "$out" "当前权重: 1"
+
 test_that "a malformed weight input is rejected by validate_weight_input and returns"
 _make_relay_rule 1 8001 "10.0.0.1" "5,5"
 _make_relay_rule 2 8001 "10.0.0.2" "5,5"
@@ -67,6 +73,32 @@ assert_contains "$out" "配置预览"
 assert_contains "$out" "已取消配置更改"
 read_rule_file "${RULES_DIR}/rule-1.conf"
 assert_eq "5,5" "$WEIGHTS"
+
+test_that "when the first rule's weight is a single value, falls back to a later rule's full comma weights"
+_make_relay_rule 1 8001 "10.0.0.1" "5"
+_make_relay_rule 2 8001 "10.0.0.2" "5,5"
+out=$(configure_port_group_weights "8001" "relay-1" "10.0.0.1:9000,10.0.0.2:9000" "5" <<< "$(printf '2,8\nn\n')")
+assert_contains "$out" "10.0.0.1:9000: 5 →"
+assert_contains "$out" "10.0.0.2:9000: 5 →"
+
+test_that "when no rule in the port group has full comma weights, defaults every target to weight 1"
+_make_relay_rule 1 8001 "10.0.0.1" "3"
+_make_relay_rule 2 8001 "10.0.0.2" "4"
+out=$(configure_port_group_weights "8001" "relay-1" "10.0.0.1:9000,10.0.0.2:9000" "3" <<< "$(printf '2,8\nn\n')")
+assert_contains "$out" "10.0.0.1:9000: 1 →"
+
+test_that "when the port's rules have no WEIGHTS at all, defaults every target to weight 1"
+_make_relay_rule 1 8001 "10.0.0.1" ""
+_make_relay_rule 2 8001 "10.0.0.2" ""
+out=$(configure_port_group_weights "8001" "relay-1" "10.0.0.1:9000,10.0.0.2:9000" "" <<< "$(printf '2,8\nn\n')")
+assert_contains "$out" "10.0.0.1:9000: 1 →"
+
+test_that "an unchanged weight for a target is shown without an arrow"
+_make_relay_rule 1 8001 "10.0.0.1" "5,5"
+_make_relay_rule 2 8001 "10.0.0.2" "5,5"
+out=$(configure_port_group_weights "8001" "relay-1" "10.0.0.1:9000,10.0.0.2:9000" "5,5" <<< "$(printf '5,8\nn\n')")
+assert_not_contains "$out" "10.0.0.1:9000: 5 →"
+assert_contains "$out" "10.0.0.2:9000: 5 →"
 
 test_that "a valid input previews the change and confirming on y applies and restarts the service"
 _make_relay_rule 1 8001 "10.0.0.1" "5,5"
@@ -96,6 +128,26 @@ assert_eq "9" "$WEIGHTS"
 test_that "reports 'no matching rules' when no rule file matches the port"
 out=$(apply_port_group_weight_config "9999" "5")
 assert_contains "$out" "未找到相关规则文件"
+
+test_that "appends a WEIGHTS field when the rule file doesn't have one yet"
+cat > "${RULES_DIR}/rule-1.conf" <<EOF
+RULE_ID=1
+RULE_NAME=relay-1
+LISTEN_PORT=8001
+RULE_ROLE=1
+REMOTE_HOST=10.0.0.1
+REMOTE_PORT=9000
+ENABLED=true
+SECURITY_LEVEL=standard
+BALANCE_MODE=roundrobin
+TARGET_STATES=
+PROXY_MODE=off
+EOF
+xwpf_seed_realm_service_file
+out=$(apply_port_group_weight_config "8001" "9")
+assert_contains "$out" "已更新 1 个规则文件的权重配置"
+read_rule_file "${RULES_DIR}/rule-1.conf"
+assert_eq "9" "$WEIGHTS"
 
 end_describe
 
