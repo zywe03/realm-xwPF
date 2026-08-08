@@ -371,6 +371,20 @@ MPTCP（启用MPTCP时创建）
 └── /etc/sysctl.d/90-enable-MPTCP.conf   # MPTCP系统配置
 ```
 
+## 🧪 测试
+
+`tests/` 下提供了基于 [ptyunit](https://github.com/fissible/ptyunit) 的自动化测试套件，包含 `lib/*.sh` 纯函数的单元测试，以及通过真实伪终端(PTY)驱动 `xwPF.sh` 交互菜单的界面测试（安装流程、转发规则管理、服务启停等）。
+
+脚本会写入真实系统路径（`/etc/realm`、`/usr/local/bin`、`/etc/systemd/system/...`），因此测试**只在一次性 Docker 容器内运行**，不会在宿主机上执行。本地手动运行和 CI（GitHub Actions）使用完全相同的命令：
+
+```bash
+bash tests/run.sh
+```
+
+该命令会构建 `tests/Dockerfile` 镜像并在容器中执行完整测试套件（需要本机已安装并运行 Docker）。
+
+当前测试覆盖范围：`core.sh` 的校验函数与传输配置生成、`rules.sh` 的基础规则CRUD、`realm.sh` 的配置生成，以及主菜单/转发配置管理/服务重启停止/离线安装等 TUI 交互流程。MPTCP 管理、负载均衡/权重、Proxy Protocol，以及按需下载的辅助脚本（故障转移、端口流量犬、链路测试、配置识别导入）暂未纳入覆盖范围。
+
 ## 🤝 技术支持
 
 - **其他开源项目：** [https://github.com/zywe03](https://github.com/zywe03)

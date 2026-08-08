@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Mock systemctl for the test sandbox.
+#
+# The real xwPF is designed to run on hosts where systemd is PID 1;
+# our test container has no init system, so this stub tracks unit
+# state (active/enabled) as flag files instead of talking to a real
+# systemd. It implements exactly the subcommands xwPF calls
+# (lib/realm.sh svc_* wrappers): start, stop, restart, enable,
+# disable, is-active, is-enabled, status, daemon-reload.
+set -u
+
+STATE_DIR="${XWPF_MOCK_STATE_DIR:-/tmp/xwpf-mock-systemd}"
+mkdir -p "$STATE_DIR"
+
+cmd="${1:-}"
+unit="${2:-}"
+unit="${unit%.service}"
+
+# Real systemd refuses to start/restart/enable a unit whose file was never
+# generated ("Unit realm.service not found."). Matching that here matters:
+# xwPF's restart_realm_service() relies on `systemctl start` failing on a
+# fresh install (no service file yet) to fall back to start_empty_service(),
+# which is what actually generates the config/unit file and enables it.
+unit_file="/etc/systemd/system/${unit}.service"
+
+case "$cmd" in
+    start)
+        if [ ! -f "$unit_file" ]; then
+            echo "Failed to start ${unit}.service: Unit ${unit}.service not found." >&2
+            exit 5
+        fi
+        touch "$STATE_DIR/${unit}.active"
+        exit 0
+        ;;
+    stop)
+        rm -f "$STATE_DIR/${unit}.active"
+        exit 0
+        ;;
+    restart)
+        if [ ! -f "$unit_file" ]; then
+            echo "Failed to restart ${unit}.service: Unit ${unit}.service not found." >&2
+            exit 5
+        fi
+        touch "$STATE_DIR/${unit}.active"
+        exit 0
+        ;;
+    enable)
+        if [ ! -f "$unit_file" ]; then
+            echo "Failed to enable ${unit}.service: Unit ${unit}.service not found." >&2
+            exit 1
+        fi
+        touch "$STATE_DIR/${unit}.enabled"
+        exit 0
+        ;;
+    disable)
+        rm -f "$STATE_DIR/${unit}.enabled"
+        exit 0
+        ;;
+    is-active)
+        if [ -f "$STATE_DIR/${unit}.active" ]; then
+            echo "active"
+            exit 0
+        else
+            echo "inactive"
+            exit 3
+        fi
+        ;;
+    is-enabled)
+        if [ -f "$STATE_DIR/${unit}.enabled" ]; then
+            echo "enabled"
+            exit 0
+        else
+            echo "disabled"
+            exit 1
+        fi
+        ;;
+    status)
+        if [ -f "$STATE_DIR/${unit}.active" ]; then
+            echo "● ${unit}.service - mock"
+            echo "   Active: active (running) [mock]"
+            exit 0
+        else
+            echo "● ${unit}.service - mock"
+            echo "   Active: inactive (dead) [mock]"
+            exit 3
+        fi
+        ;;
+    daemon-reload)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Mock curl for the test sandbox.
+#
+# xwPF's own lib/*.sh only ever calls curl in two shapes:
+#   1. download_from_sources()/_download(): `curl ... "$url" -o "$target"`
+#      to fetch a companion script (xwFailover.sh, speedtest.sh, ...) or the
+#      xwPF script/module files themselves from
+#      raw.githubusercontent.com/zywe03/realm-xwPF/main/...
+#   2. Everything else (get_public_ip, get_latest_realm_version): a plain
+#      `curl ... "$url"` printed to stdout, with graceful fallback already
+#      built into the caller if curl fails.
+#
+# We keep this hermetic and fast: URLs under the project's own raw.githubusercontent.com
+# path are served from the local checkout (XWPF_REPO_ROOT) so download+invoke flows for
+# companion scripts still get real coverage; every other URL fails immediately instead of
+# hitting the network, which exercises the same fallback paths a real offline host would.
+set -u
+
+REPO_ROOT="${XWPF_REPO_ROOT:?XWPF_REPO_ROOT must be set for the curl mock}"
+RAW_PREFIX="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/"
+
+url=""
+outfile=""
+prev=""
+for arg in "$@"; do
+    case "$prev" in
+        -o|--output)
+            outfile="$arg"
+            ;;
+    esac
+    case "$arg" in
+        http://*|https://*)
+            url="$arg"
+            ;;
+    esac
+    prev="$arg"
+done
+
+if [ -z "$url" ]; then
+    exit 7
+fi
+
+case "$url" in
+    "$RAW_PREFIX"*)
+        rel="${url#"$RAW_PREFIX"}"
+        src="$REPO_ROOT/$rel"
+        if [ -f "$src" ]; then
+            if [ -n "$outfile" ]; then
+                cp "$src" "$outfile"
+            else
+                cat "$src"
+            fi
+            exit 0
+        fi
+        exit 22
+        ;;
+    *)
+        # Simulate "couldn't connect" (curl exit code 7) for anything real,
+        # e.g. github.com/.../releases, ipinfo.io, cloudflare trace.
+        exit 7
+        ;;
+esac
