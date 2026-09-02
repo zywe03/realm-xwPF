@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Mock journalctl. The real `svc_logs` calls `journalctl -u realm -f --no-pager`,
+# which blocks forever tailing logs. Tests never need to assert on log content,
+# just that the menu path is reachable, so print one line and return instead of
+# blocking on `-f`.
+echo "-- mock journal: no entries --"
+exit 0

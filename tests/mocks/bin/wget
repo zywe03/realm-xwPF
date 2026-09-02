@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Mock wget. Only reachable from xwPF.sh's own bootstrap installer
+# (`xwPF.sh install`), which the test suite does not exercise (it tests the
+# checked-out lib/ files directly). Kept as a hard failure for safety, so
+# any accidental invocation shows up as a loud test failure rather than a
+# silent real network call.
+exit 1
