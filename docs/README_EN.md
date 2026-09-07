@@ -373,6 +373,20 @@ MPTCP (created when MPTCP is enabled)
 └── /etc/sysctl.d/90-enable-MPTCP.conf   # MPTCP sysctl config
 ```
 
+## 🧪 Testing
+
+`tests/` contains an automated test suite built on [ptyunit](https://github.com/fissible/ptyunit): unit tests for the pure functions in `lib/*.sh`, plus PTY-driven integration tests that exercise `xwPF.sh`'s interactive menus over a real pseudoterminal (install flow, forwarding-rule management, service start/stop, etc.).
+
+Because the script writes to real system paths (`/etc/realm`, `/usr/local/bin`, `/etc/systemd/system/...`), tests **only ever run inside a throwaway Docker container**, never on the host. Local manual runs and CI (GitHub Actions) use the exact same command:
+
+```bash
+bash tests/run.sh
+```
+
+This builds the `tests/Dockerfile` image and runs the full suite inside it (requires Docker installed and running locally).
+
+Current coverage: `core.sh` validators and transport-config generation, `rules.sh` basic rule CRUD, `realm.sh` config generation, and the main-menu/rules-management/service-restart-stop/offline-install TUI flows. MPTCP management, load balancing/weights, Proxy Protocol, and the on-demand auxiliary scripts (failover, port-traffic-dog, speedtest, config-recognition import) are not yet covered.
+
 ## 🤝 Support
 
 - **More Projects:** [https://github.com/zywe03](https://github.com/zywe03)

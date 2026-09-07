@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Mock rc-update for the test sandbox (OpenRC's equivalent of `systemctl
+# enable`/`disable`). Only reached when INIT_SYSTEM=openrc is set within a
+# test; mirrors tests/mocks/bin/systemctl's flag-file state tracking.
+set -u
+
+STATE_DIR="${XWPF_MOCK_STATE_DIR:-/tmp/xwpf-mock-systemd}"
+mkdir -p "$STATE_DIR"
+
+cmd="${1:-}"
+svc="${2:-}"
+svc="${svc%.service}"
+
+case "$cmd" in
+    add)
+        touch "$STATE_DIR/${svc}.enabled"
+        exit 0
+        ;;
+    del)
+        rm -f "$STATE_DIR/${svc}.enabled"
+        exit 0
+        ;;
+    show)
+        # `rc-update show default` — $2 is the runlevel ("default"), not the
+        # service name, so this always reports on the one service xwPF manages.
+        [ -f "$STATE_DIR/realm.enabled" ] && echo "                      realm | default"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac

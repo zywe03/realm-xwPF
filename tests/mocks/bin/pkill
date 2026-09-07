@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Mock pkill for the test sandbox. See tests/mocks/bin/pgrep for why a real
+# pkill is unsafe to call from a test process. Clears the same fake-process
+# flag file pgrep checks, so a pgrep-then-pkill pair behaves like a real one
+# without touching any actual process.
+set -u
+
+STATE_DIR="${XWPF_MOCK_STATE_DIR:-/tmp/xwpf-mock-systemd}"
+
+if [ -f "$STATE_DIR/fake-realm-proc" ]; then
+    rm -f "$STATE_DIR/fake-realm-proc"
+    exit 0
+fi
+exit 1

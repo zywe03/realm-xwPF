@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Mock rc-service for the test sandbox (OpenRC's equivalent of systemctl).
+#
+# Only used when INIT_SYSTEM=openrc is set within a test — every other test
+# runs with the (hardcoded) systemd branch and never touches this. Mirrors
+# tests/mocks/bin/systemctl's flag-file state tracking so svc_is_active/
+# svc_status_text can round-trip through it the same way.
+set -u
+
+STATE_DIR="${XWPF_MOCK_STATE_DIR:-/tmp/xwpf-mock-systemd}"
+mkdir -p "$STATE_DIR"
+
+svc="${1:-}"
+cmd="${2:-}"
+svc="${svc%.service}"
+
+case "$cmd" in
+    start)
+        touch "$STATE_DIR/${svc}.active"
+        exit 0
+        ;;
+    stop)
+        rm -f "$STATE_DIR/${svc}.active"
+        exit 0
+        ;;
+    restart)
+        touch "$STATE_DIR/${svc}.active"
+        exit 0
+        ;;
+    status)
+        if [ -f "$STATE_DIR/${svc}.active" ]; then
+            echo " * status: started"
+            exit 0
+        else
+            echo " * status: stopped"
+            exit 3
+        fi
+        ;;
+    *)
+        exit 0
+        ;;
+esac

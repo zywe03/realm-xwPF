@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Mock `ip` for the test sandbox.
+#
+# Real iproute2 works for basic loopback queries in the container, but two
+# things make it useless for exercising lib/server.sh's MPTCP code paths
+# deterministically: (1) `ip mptcp ...` netlink ops always fail here since
+# the container's kernel/netns doesn't expose CONFIG_MPTCP ("RTNETLINK
+# answers: No such file or directory"), and (2) container interfaces carry
+# a `@ifNNN` suffix that changes every run and breaks `ip addr show IFACE`
+# lookups for the interface names `ip link show` itself reports. This stub
+# lets tests control interface/MPTCP-endpoint output via env vars instead.
+#
+# Installed at both tests/mocks/bin/ip (PATH-based, for bare `ip` calls)
+# and /usr/bin/ip (see tests/Dockerfile, for lib/server.sh's `/usr/bin/ip`
+# absolute-path calls, which bypass PATH).
+set -u
+
+# XWPF_MOCK_IP_INTERFACES: comma-separated "name:ipv4:ipv6" entries, e.g.
+# "eth0:10.0.0.5/24:,wg0::fd00::1/64". Either address may be empty.
+_interfaces() {
+    local IFS=','
+    read -ra _ifaces <<< "${XWPF_MOCK_IP_INTERFACES:-}"
+}
+
+case "$*" in
+    "-V")
+        echo "ip utility, iproute2-6.1.0, mock"
+        exit 0
+        ;;
+    "link show")
+        _interfaces
+        local_i=1
+        for entry in "${_ifaces[@]}"; do
+            name="${entry%%:*}"
+            [ -z "$name" ] && continue
+            echo "${local_i}: ${name}: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000"
+            local_i=$((local_i + 1))
+        done
+        exit 0
+        ;;
+    "-4 addr show "*|"-6 addr show "*)
+        family="$1"
+        iface="$4"
+        _interfaces
+        for entry in "${_ifaces[@]}"; do
+            name="${entry%%:*}"
+            [ "$name" != "$iface" ] && continue
+            rest="${entry#*:}"
+            ipv4="${rest%%:*}"
+            ipv6="${rest#*:}"
+            if [ "$family" = "-4" ] && [ -n "$ipv4" ]; then
+                echo "    inet ${ipv4} brd 255.255.255.255 scope global $iface"
+            elif [ "$family" = "-6" ] && [ -n "$ipv6" ]; then
+                echo "    inet6 ${ipv6} scope global"
+            fi
+        done
+        exit 0
+        ;;
+    "mptcp help")
+        if [ "${XWPF_MOCK_IP_MPTCP_UNSUPPORTED:-}" = "1" ]; then
+            echo "Object \"mptcp\" is unknown, try \"ip help\"." >&2
+            exit 1
+        fi
+        echo "Usage:	ip mptcp endpoint add ADDRESS [ dev NAME ] [ id ID ]"
+        echo "	ip mptcp limits set [ subflows NR ] [ add_addr_accepted NR ]"
+        exit 0
+        ;;
+    "mptcp endpoint show")
+        if [ "${XWPF_MOCK_IP_MPTCP_UNAVAILABLE:-}" = "1" ]; then
+            echo "RTNETLINK answers: No such file or directory" >&2
+            exit 1
+        fi
+        if [ -n "${XWPF_MOCK_IP_MPTCP_ENDPOINTS:-}" ]; then
+            printf '%s\n' "${XWPF_MOCK_IP_MPTCP_ENDPOINTS}"
+        fi
+        exit 0
+        ;;
+    "mptcp endpoint flush")
+        exit 0
+        ;;
+    "mptcp endpoint add "*)
+        if [ "${XWPF_MOCK_IP_MPTCP_ADD_FAIL:-}" = "1" ]; then
+            echo "mock: add failed: address already exists" >&2
+            exit 1
+        fi
+        exit 0
+        ;;
+    "mptcp endpoint delete "*)
+        if [ "${XWPF_MOCK_IP_MPTCP_DELETE_FAIL:-}" = "1" ]; then
+            echo "mock: delete failed" >&2
+            exit 1
+        fi
+        exit 0
+        ;;
+    "mptcp limits set "*)
+        if [ "${XWPF_MOCK_IP_MPTCP_LIMITS_FAIL:-}" = "1" ]; then
+            exit 1
+        fi
+        exit 0
+        ;;
+    "mptcp limits show")
+        echo "subflows 2 add_addr_accepted 0"
+        exit 0
+        ;;
+    "mptcp monitor")
+        if [ "${XWPF_MOCK_IP_MPTCP_MONITOR_FAIL:-}" = "1" ]; then
+            exit 1
+        fi
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# No-op mock for apt in the test sandbox.
+#
+# lib/server.sh's upgrade_iproute2_for_mptcp() falls back to a real
+# `apt update && apt install -y iproute2` when `ip mptcp help` doesn't
+# advertise support (controllable via the mock ip's
+# XWPF_MOCK_IP_MPTCP_UNSUPPORTED). Running the real apt here would be slow,
+# network-dependent, and non-deterministic in CI; this stub just succeeds
+# immediately so that code path is exercisable without touching the network.
+exit 0
