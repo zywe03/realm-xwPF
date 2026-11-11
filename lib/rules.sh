@@ -578,9 +578,22 @@ disable_balance_for_port() {
     done
 }
 
+# 保存本次 TLS 编辑字段；转义 source 和 sed 的特殊字符，兼容缺少字段的旧规则。
+save_tls_rule_field() {
+    local rule_file="$1" field="$2" value="$3" assignment
+    printf -v assignment '%s=%q' "$field" "$value"
+    assignment=$(printf '%s' "$assignment" | sed 's/[\\&|]/\\&/g') || return 1
+    if grep -q "^${field}=" "$rule_file"; then
+        sed -i "s|^${field}=.*|${assignment}|" "$rule_file"
+    else
+        printf '\n%s=%q\n' "$field" "$value" >> "$rule_file"
+    fi
+}
+
 # 编辑中转服务器配置
 edit_nat_server_config() {
     local rule_file="$1"
+    local TLS_SERVER_NAME=""
     read_rule_file "$rule_file"
     
     echo -e "${YELLOW}=== 编辑中转服务器配置 ===${NC}"
@@ -707,6 +720,22 @@ edit_nat_server_config() {
         echo "PROTOCOL=\"$new_protocol\"" >> "$rule_file"
     fi
 
+    if [ "$SECURITY_LEVEL" = "tls_ca" ] || [ "$SECURITY_LEVEL" = "ws_tls_ca" ]; then
+        echo ""
+        echo "同端口多规则仍使用首条启用规则的 TLS 配置，本次只编辑当前规则。"
+        local new_tls_server_name
+        while true; do
+            printf 'TLS服务器名称 (SNI，回车保留 %s): ' "${TLS_SERVER_NAME:-$DEFAULT_SNI_DOMAIN}"
+            IFS= read -r new_tls_server_name || break
+            [ -n "$new_tls_server_name" ] || break
+            if validate_single_address "$new_tls_server_name"; then
+                save_tls_rule_field "$rule_file" TLS_SERVER_NAME "$new_tls_server_name" || return 1
+                break
+            fi
+            echo -e "${RED}无效的TLS服务器名称，请输入域名或IP，不含端口及传输参数${NC}"
+        done
+    fi
+
     # 规则备注编辑
     local current_note="${RULE_NOTE:-}"
     echo -ne "规则备注(回车默认${GREEN}${current_note}${NC}): "
@@ -794,6 +823,7 @@ edit_nat_server_config() {
 # 编辑服务端服务器配置
 edit_exit_server_config() {
     local rule_file="$1"
+    local TLS_CERT_PATH="" TLS_KEY_PATH=""
     read_rule_file "$rule_file"
     
     echo -e "${YELLOW}=== 编辑解密并转发服务器配置 (双端Realm架构) ===${NC}"
@@ -895,6 +925,48 @@ edit_exit_server_config() {
         sed -i "s/^PROTOCOL=.*/PROTOCOL=\"$new_protocol\"/" "$rule_file"
     else
         echo "PROTOCOL=\"$new_protocol\"" >> "$rule_file"
+    fi
+
+    if [ "$SECURITY_LEVEL" = "tls_ca" ] || [ "$SECURITY_LEVEL" = "ws_tls_ca" ]; then
+        echo ""
+        echo "同端口多规则仍使用首条启用规则的 TLS 配置，本次只编辑当前规则。"
+        local new_tls_cert_path="${TLS_CERT_PATH:-}" new_tls_key_path="${TLS_KEY_PATH:-}"
+        local tls_field tls_label tls_path tls_input_complete=true
+        for tls_field in new_tls_cert_path new_tls_key_path; do
+            if [ "$tls_field" = "new_tls_cert_path" ]; then
+                tls_label="证书文件路径"
+            else
+                tls_label="私钥文件路径"
+            fi
+            while true; do
+                printf '%s (回车保留 %s): ' "$tls_label" "${!tls_field}"
+                if ! IFS= read -r tls_path; then
+                    tls_input_complete=false
+                    break 2
+                fi
+                [ -n "$tls_path" ] || break
+                # 保持现有 transport 生成逻辑，仅接受其能原样表达的新路径。
+                case "$tls_path" in
+                    *[[:space:][:cntrl:]]*|*';'*|*'|'*|*'"'*|*'\'*|*'*'*|*'?'*|*'['*)
+                        echo -e "${RED}路径不能包含空白、控制字符、分号、竖线、双引号、反斜线或通配符${NC}"
+                        continue
+                        ;;
+                esac
+                if [ -f "$tls_path" ]; then
+                    printf -v "$tls_field" '%s' "$tls_path"
+                    break
+                fi
+                echo -e "${RED}文件不存在，请检查路径${NC}"
+            done
+        done
+        if [ "$tls_input_complete" = true ]; then
+            if [ "$new_tls_cert_path" != "${TLS_CERT_PATH:-}" ]; then
+                save_tls_rule_field "$rule_file" TLS_CERT_PATH "$new_tls_cert_path" || return 1
+            fi
+            if [ "$new_tls_key_path" != "${TLS_KEY_PATH:-}" ]; then
+                save_tls_rule_field "$rule_file" TLS_KEY_PATH "$new_tls_key_path" || return 1
+            fi
+        fi
     fi
 
     # 更新或添加 RULE_NOTE 字段
