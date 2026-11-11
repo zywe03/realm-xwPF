@@ -694,7 +694,8 @@ edit_nat_server_config() {
     esac
     local new_protocol
     while true; do
-        read -p "请输入选择(回车默认${GREEN}${proto_default}${NC}) [1-3]: " proto_choice
+        echo -ne "请输入选择(回车默认${GREEN}${proto_default}${NC}) [1-3]: " >&2
+        read proto_choice
         [ -z "$proto_choice" ] && proto_choice="$proto_default"
         case "$proto_choice" in
             1) new_protocol="both"  ; echo -e "${GREEN}已选择: TCP+UDP 双栈${NC}"; break ;;
@@ -899,7 +900,8 @@ edit_exit_server_config() {
     esac
     local new_protocol
     while true; do
-        read -p "请输入选择(回车默认${GREEN}${proto_default}${NC}) [1-3]: " proto_choice
+        echo -ne "请输入选择(回车默认${GREEN}${proto_default}${NC}) [1-3]: " >&2
+        read proto_choice
         [ -z "$proto_choice" ] && proto_choice="$proto_default"
         case "$proto_choice" in
             1) new_protocol="both"  ; echo -e "${GREEN}已选择: TCP+UDP 双栈${NC}"; break ;;
