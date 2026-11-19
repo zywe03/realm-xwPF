@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Mock sysctl for the test sandbox.
+#
+# lib/server.sh's MPTCP setup calls real `sysctl -p`/`sysctl -w` to apply
+# net.mptcp.* keys that the container's kernel/netns never exposes (no
+# /proc/sys/net/mptcp/enabled here), so the real binary always fails and
+# the "applied successfully" branches are otherwise unreachable. Default to
+# success so those branches are exercisable.
+#
+# XWPF_MOCK_SYSCTL_FAIL=1 fails every call (for the blanket-failure
+# branches). XWPF_MOCK_SYSCTL_FAIL_KEYS="key1,key2" fails only `sysctl -w`
+# calls whose key=value argument matches one of the listed keys, so a
+# single enable_mptcp() call can exercise one key's failure branch while
+# its other sysctl -w calls still succeed.
+set -u
+
+if [ "${XWPF_MOCK_SYSCTL_FAIL:-}" = "1" ]; then
+    echo "sysctl: mock failure" >&2
+    exit 1
+fi
+
+if [ "${1:-}" = "-w" ] && [ -n "${XWPF_MOCK_SYSCTL_FAIL_KEYS:-}" ]; then
+    IFS=',' read -ra _fail_keys <<< "${XWPF_MOCK_SYSCTL_FAIL_KEYS}"
+    for _key in "${_fail_keys[@]}"; do
+        if [ "${2#$_key=}" != "$2" ]; then
+            echo "sysctl: mock failure for $_key" >&2
+            exit 1
+        fi
+    done
+fi
+
+exit 0

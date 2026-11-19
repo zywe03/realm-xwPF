@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Mock pgrep for the test sandbox.
+#
+# uninstall_realm_stage_one()'s `pgrep "realm" >/dev/null 2>&1 && pkill ...`
+# is the only caller. A real pgrep/pkill pair is unsafe to exercise from a
+# test process: `pkill -f "realm"` matches by full command line, and every
+# parallel unit-test worker's own command line contains "realm" (e.g.
+# `bash tests/unit/test-realm-install.sh`), so it would kill sibling test
+# processes instead of a fake target. This stub tracks a "fake realm
+# process is running" flag file instead, letting tests exercise both the
+# match and no-match branches deterministically.
+set -u
+
+STATE_DIR="${XWPF_MOCK_STATE_DIR:-/tmp/xwpf-mock-systemd}"
+
+[ -f "$STATE_DIR/fake-realm-proc" ] && exit 0
+exit 1

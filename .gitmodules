@@ -1,0 +1,3 @@
+[submodule "tests/ptyunit"]
+	path = tests/ptyunit
+	url = https://github.com/fissible/ptyunit
