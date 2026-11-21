@@ -1,7 +1,5 @@
 #!/bin/bash
 
-# Webhook 通知模块（企业微信/飞书/钉钉群机器人）
-
 # 网络参数：防止重复source时的readonly冲突
 if [[ -z "${WEBHOOK_MAX_RETRIES:-}" ]]; then
     readonly WEBHOOK_MAX_RETRIES=2
@@ -33,7 +31,6 @@ webhook_build_payload() {
     esac
 }
 
-# 按平台判断API成功响应
 webhook_is_success() {
     local platform="$1"
     local response="$2"
@@ -77,7 +74,6 @@ send_webhook_message() {
             -d @- \
             "$webhook_url" 2>/dev/null)
 
-        # 按平台判断成功响应
         if webhook_is_success "$platform" "$response"; then
             if [ $retry_count -gt 0 ]; then
                 log_notification "Webhook消息发送成功 (重试第${retry_count}次后成功)"
@@ -105,7 +101,6 @@ webhook_send_status_notification() {
         return 1
     fi
 
-    # 使用text格式消息
     local server_name=$(jq -r '.notifications.webhook.server_name // ""' "$CONFIG_FILE" 2>/dev/null || echo "$(hostname)")
     local message=$(format_text_status_message "$server_name")
     if send_webhook_message "$message"; then
@@ -150,13 +145,11 @@ webhook_configure() {
         local webhook_url=$(jq -r '.notifications.webhook.webhook_url // ""' "$CONFIG_FILE")
         local platform=$(jq -r '.notifications.webhook.platform // "wecom"' "$CONFIG_FILE")
 
-        # 判断配置状态
         local config_status="[未配置]"
         if [ -n "$webhook_url" ] && [ "$webhook_url" != "" ] && [ "$webhook_url" != "null" ]; then
             config_status="[已配置]"
         fi
 
-        # 判断开关状态
         local enable_status="[关闭]"
         if [ "$status_notifications_enabled" = "true" ]; then
             enable_status="[开启]"
@@ -245,28 +238,30 @@ webhook_configure_webhook() {
     fi
 
     local default_server_name=$(hostname)
-    read -p "请输入服务器名称 (回车默认: $default_server_name): " server_name
+    read -r -p "请输入服务器名称 (回车默认: $default_server_name): " server_name
     if [ -z "$server_name" ]; then
         server_name="$default_server_name"
     fi
 
-    # 原子性配置更新：确保配置完整性
-    update_config ".notifications.webhook.platform = \"$platform\" |
-        .notifications.webhook.webhook_url = \"$webhook_url\" |
-        .notifications.webhook.server_name = \"$server_name\" |
+    echo -e "${BLUE}=== 状态通知间隔设置 ===${NC}"
+    local interval
+    interval=$(select_notification_interval)
+
+    # 值经 --arg 传入：server_name 等自由文本里的引号会破坏 jq 表达式
+    if ! update_config --arg platform "$platform" --arg url "$webhook_url" --arg name "$server_name" --arg interval "$interval" \
+        ".notifications.webhook.platform = \$platform |
+        .notifications.webhook.webhook_url = \$url |
+        .notifications.webhook.server_name = \$name |
         .notifications.webhook.enabled = true |
-        .notifications.webhook.status_notifications.enabled = true"
+        .notifications.webhook.status_notifications.enabled = true |
+        .notifications.webhook.status_notifications.interval = \$interval"; then
+        echo -e "${RED}✗ 基本配置保存失败，请检查配置文件 JSON 格式和写入权限${NC}"
+        return 1
+    fi
 
     echo -e "${GREEN}基本配置保存成功！${NC}"
-    echo
-
-    echo -e "${BLUE}=== 状态通知间隔设置 ===${NC}"
-    local interval=$(select_notification_interval)
-
-    update_config ".notifications.webhook.status_notifications.interval = \"$interval\""
     echo -e "${GREEN}状态通知间隔已设置为: $interval${NC}"
 
-    # 立即生效
     setup_webhook_notification_cron
 
     echo

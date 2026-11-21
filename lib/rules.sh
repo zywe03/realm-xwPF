@@ -8,6 +8,40 @@ init_rules_dir() {
     fi
 }
 
+# 精确判断逗号列表元素；子串匹配会把 1.2.3.4:8080 当成 1.2.3.4:80 已存在而丢弃
+list_contains() {
+    [[ -n "$2" && ",$1," == *",$2,"* ]]
+}
+
+# 覆盖规则文件中的单行字段，旧规则缺该字段时追加。
+# 不用 sed/awk 替换值：两者会对反斜杠二次处理，破坏 rule_quote 的转义结果
+save_rule_field() {
+    local rule_file="$1" field="$2" value="$3"
+    local assignment line tmp_file found=0
+    local -a lines=()
+
+    [ -f "$rule_file" ] || return 1
+    mapfile -t lines < "$rule_file" || return 1
+    assignment="$field=$(rule_quote "$value")"
+    for line in "${!lines[@]}"; do
+        if [ "${lines[$line]%%=*}" = "$field" ]; then
+            lines[$line]="$assignment"
+            found=1
+        fi
+    done
+    if [ "$found" -eq 0 ]; then
+        lines+=("" "$assignment")
+    fi
+
+    tmp_file=$(mktemp "${rule_file}.tmp.XXXXXX") || return 1
+    if cp -p -- "$rule_file" "$tmp_file" && printf '%s\n' "${lines[@]}" > "$tmp_file" &&
+       mv -fT -- "$tmp_file" "$rule_file"; then
+        return 0
+    fi
+    rm -f -- "$tmp_file"
+    return 1
+}
+
 validate_rule_ids() {
     local rule_ids="$1"
     local valid_ids=()
@@ -47,7 +81,6 @@ get_active_rules_count() {
     echo "$count"
 }
 
-# 规则重排序后同步更新健康监控记录，保持数据一致性
 sync_health_status_ids() {
     local health_status_file="/etc/realm/health/health_status.conf"
 
@@ -90,7 +123,6 @@ sync_health_status_ids() {
     fi
 }
 
-# 按端口和角色排序规则ID，提升配置可读性和管理效率
 reorder_rule_ids() {
     if [ ! -d "$RULES_DIR" ]; then
         return 0
@@ -153,9 +185,7 @@ reorder_rule_ids() {
         new_id=$((new_id + 1))
     done
 
-    # 原子性操作：避免中间状态导致的配置不一致
     if rm -f "${RULES_DIR}"/rule-*.conf && mv "${temp_dir}"/rule-*.conf "${RULES_DIR}/"; then
-        rmdir "$temp_dir"
         sync_health_status_ids
         return 0
     else
@@ -362,7 +392,6 @@ display_single_rule_info() {
         status_text="禁用"
     fi
 
-    # 基础信息显示
     case "$display_mode" in
         "mptcp")
             local mptcp_mode="${MPTCP_MODE:-off}"
@@ -454,7 +483,6 @@ list_all_rules() {
     echo -e "${BLUE}共找到 $count 个配置${NC}"
 }
 
-# 编辑现有规则
 edit_rule_interactive() {
     echo -e "${YELLOW}=== 编辑配置 ===${NC}"
     echo ""
@@ -510,8 +538,6 @@ edit_rule_interactive() {
     read -p "按回车键返回..."
 }
 
-# 从TARGET_STATES移除指定目标，保持目标与权重的索引对应关系
-# 格式: "new_target_states|new_weights"
 remove_target_from_states() {
     local original_states="$1"
     local target_to_remove="$2"
@@ -540,7 +566,6 @@ remove_target_from_states() {
     echo "$new_target_states|$new_weights"
 }
 
-# 同步更新同端口负载均衡组的所有规则
 sync_target_states_for_port() {
     local port="$1"
     local new_target_states="$2"
@@ -562,7 +587,6 @@ sync_target_states_for_port() {
     return $updated_count
 }
 
-# 降级单规则模式
 disable_balance_for_port() {
     local port="$1"
     local rf
@@ -578,19 +602,6 @@ disable_balance_for_port() {
     done
 }
 
-# 保存本次 TLS 编辑字段；转义 source 和 sed 的特殊字符，兼容缺少字段的旧规则。
-save_tls_rule_field() {
-    local rule_file="$1" field="$2" value="$3" assignment
-    printf -v assignment '%s=%q' "$field" "$value"
-    assignment=$(printf '%s' "$assignment" | sed 's/[\\&|]/\\&/g') || return 1
-    if grep -q "^${field}=" "$rule_file"; then
-        sed -i "s|^${field}=.*|${assignment}|" "$rule_file"
-    else
-        printf '\n%s=%q\n' "$field" "$value" >> "$rule_file"
-    fi
-}
-
-# 编辑中转服务器配置
 edit_nat_server_config() {
     local rule_file="$1"
     local TLS_SERVER_NAME=""
@@ -639,12 +650,21 @@ edit_nat_server_config() {
     
     local new_remote_host
     echo -ne "出口服务器的IP地址或域名(回车默认${GREEN}${REMOTE_HOST}${NC}): "
-    read new_remote_host
+    read -r new_remote_host
     if [ -z "$new_remote_host" ]; then
         new_remote_host="$REMOTE_HOST"
-    elif ! validate_single_address "$new_remote_host"; then
+    elif ! [[ "$new_remote_host" =~ ^[a-zA-Z0-9.:,[:blank:]-]+$ ]] ||
+         ! validate_target_address "$new_remote_host" || [[ "$new_remote_host" == *, ]]; then
         echo -e "${RED}无效地址，保持原值${NC}"
         new_remote_host="$REMOTE_HOST"
+    else
+        new_remote_host=${new_remote_host//[[:blank:]]/}
+        if [[ "$new_remote_host" == *,* ]] && [ "$BALANCE_MODE" != "off" ] &&
+           [ -n "$TARGET_STATES" ] && [ "$new_listen_port" = "$LISTEN_PORT" ] &&
+           [ "$new_remote_host" != "$REMOTE_HOST" ]; then
+            echo -e "${RED}同端口的负载均衡规则只能设置一个出口地址，本次保持原值；需多个出口请先关闭该端口的负载均衡${NC}"
+            new_remote_host="$REMOTE_HOST"
+        fi
     fi
     
     local new_remote_port
@@ -662,7 +682,6 @@ edit_nat_server_config() {
         fi
     done
     
-    # 保存原始值用于后续比较
     local old_remote_host="$REMOTE_HOST"
     local old_remote_port="$REMOTE_PORT"
     local old_listen_port="$LISTEN_PORT"
@@ -672,14 +691,12 @@ edit_nat_server_config() {
         is_balance_mode=true
     fi
 
-    # 更新基本字段
     sed -i "s/^LISTEN_PORT=.*/LISTEN_PORT=\"$new_listen_port\"/" "$rule_file"
     sed -i "s|^LISTEN_IP=.*|LISTEN_IP=\"$new_listen_ip\"|" "$rule_file"
     sed -i "s|^THROUGH_IP=.*|THROUGH_IP=\"$new_through_ip\"|" "$rule_file"
-    sed -i "s/^REMOTE_HOST=.*/REMOTE_HOST=\"$new_remote_host\"/" "$rule_file"
+    save_rule_field "$rule_file" REMOTE_HOST "$new_remote_host" || return 1
     sed -i "s/^REMOTE_PORT=.*/REMOTE_PORT=\"$new_remote_port\"/" "$rule_file"
 
-    # 转发协议编辑：both 双栈是常态，纯 TCP/纯 UDP 才需要标注
     local current_protocol="${PROTOCOL:-both}"
     echo ""
     echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
@@ -730,30 +747,23 @@ edit_nat_server_config() {
             IFS= read -r new_tls_server_name || break
             [ -n "$new_tls_server_name" ] || break
             if validate_single_address "$new_tls_server_name"; then
-                save_tls_rule_field "$rule_file" TLS_SERVER_NAME "$new_tls_server_name" || return 1
+                save_rule_field "$rule_file" TLS_SERVER_NAME "$new_tls_server_name" || return 1
                 break
             fi
             echo -e "${RED}无效的TLS服务器名称，请输入域名或IP，不含端口及传输参数${NC}"
         done
     fi
 
-    # 规则备注编辑
     local current_note="${RULE_NOTE:-}"
     echo -ne "规则备注(回车默认${GREEN}${current_note}${NC}): "
-    read new_note
+    read -r new_note
     new_note=$(echo "$new_note" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
     if [ -z "$new_note" ]; then
         new_note="$current_note"
     fi
 
-    # 更新或添加 RULE_NOTE 字段
-    if grep -q "^RULE_NOTE=" "$rule_file"; then
-        sed -i "s|^RULE_NOTE=.*|RULE_NOTE=\"$new_note\"|" "$rule_file"
-    else
-        echo "RULE_NOTE=\"$new_note\"" >> "$rule_file"
-    fi
+    save_rule_field "$rule_file" RULE_NOTE "$new_note" || return 1
 
-    # 如果是负载均衡模式，需要处理TARGET_STATES同步
     if [ "$is_balance_mode" = true ]; then
 
         local old_target="${old_remote_host}:${old_remote_port}"
@@ -794,18 +804,23 @@ edit_nat_server_config() {
                 fi
             fi
 
-            # 规则变为独立规则，清空负载均衡配置
             sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"off\"/" "$rule_file"
             sed -i "s|^TARGET_STATES=.*|TARGET_STATES=\"\"|" "$rule_file"
             sed -i "s|^WEIGHTS=.*|WEIGHTS=\"\"|" "$rule_file"
             echo -e "${GREEN}✓ 当前规则已设为独立规则（端口 $new_listen_port）${NC}"
 
-        # 目标变更 - 同步更新负载均衡组
         elif [ "$target_changed" = true ]; then
             echo ""
             echo -e "${BLUE}检测到负载均衡规则，正在同步更新相同端口的所有规则...${NC}"
 
-            local new_target_states="${TARGET_STATES//$old_target/$new_target}"
+            local -a edited_targets
+            local i
+            IFS=',' read -ra edited_targets <<< "$TARGET_STATES"
+            for i in "${!edited_targets[@]}"; do
+                [ "${edited_targets[$i]}" != "$old_target" ] || edited_targets[$i]="$new_target"
+            done
+            local new_target_states
+            new_target_states=$(IFS=','; printf '%s' "${edited_targets[*]}")
 
             sync_target_states_for_port "$old_listen_port" "$new_target_states" "$WEIGHTS"
             local sync_count=$?
@@ -821,7 +836,6 @@ edit_nat_server_config() {
     return 0
 }
 
-# 编辑服务端服务器配置
 edit_exit_server_config() {
     local rule_file="$1"
     local TLS_CERT_PATH="" TLS_KEY_PATH=""
@@ -872,11 +886,10 @@ edit_exit_server_config() {
             echo -e "${RED}无效端口号${NC}"
         fi
     done
-    
-    # 规则备注编辑
+
     local current_note="${RULE_NOTE:-}"
     echo -ne "规则备注(回车默认${GREEN}${current_note}${NC}): "
-    read new_note
+    read -r new_note
     new_note=$(echo "$new_note" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
     if [ -z "$new_note" ]; then
         new_note="$current_note"
@@ -885,7 +898,6 @@ edit_exit_server_config() {
     sed -i "s/^LISTEN_PORT=.*/LISTEN_PORT=\"$new_listen_port\"/" "$rule_file"
     sed -i "s|^FORWARD_TARGET=.*|FORWARD_TARGET=\"${new_target_host}:${new_target_port}\"|" "$rule_file"
 
-    # 转发协议编辑：both 双栈是常态，纯 TCP/纯 UDP 才需要标注
     local current_protocol="${PROTOCOL:-both}"
     echo ""
     echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
@@ -963,21 +975,16 @@ edit_exit_server_config() {
         done
         if [ "$tls_input_complete" = true ]; then
             if [ "$new_tls_cert_path" != "${TLS_CERT_PATH:-}" ]; then
-                save_tls_rule_field "$rule_file" TLS_CERT_PATH "$new_tls_cert_path" || return 1
+                save_rule_field "$rule_file" TLS_CERT_PATH "$new_tls_cert_path" || return 1
             fi
             if [ "$new_tls_key_path" != "${TLS_KEY_PATH:-}" ]; then
-                save_tls_rule_field "$rule_file" TLS_KEY_PATH "$new_tls_key_path" || return 1
+                save_rule_field "$rule_file" TLS_KEY_PATH "$new_tls_key_path" || return 1
             fi
         fi
     fi
 
-    # 更新或添加 RULE_NOTE 字段
-    if grep -q "^RULE_NOTE=" "$rule_file"; then
-        sed -i "s|^RULE_NOTE=.*|RULE_NOTE=\"$new_note\"|" "$rule_file"
-    else
-        echo "RULE_NOTE=\"$new_note\"" >> "$rule_file"
-    fi
-    
+    save_rule_field "$rule_file" RULE_NOTE "$new_note" || return 1
+
     echo ""
     echo -e "${GREEN}✓ 配置已更新${NC}"
     return 0
@@ -1043,8 +1050,10 @@ interactive_add_rule() {
     echo -e "${YELLOW}正在创建转发配置...${NC}"
     init_rules_dir
 
+    local create_status=0
+
     if [ "$RULE_ROLE" -eq 1 ]; then
-        create_nat_rules_for_ports "$NAT_LISTEN_PORT" "$REMOTE_PORT"
+        create_nat_rules_for_ports "$NAT_LISTEN_PORT" "$REMOTE_PORT" || create_status=$?
     elif [ "$RULE_ROLE" -eq 2 ]; then
         local forward_port="${FORWARD_TARGET##*:}"
         local forward_address="${FORWARD_TARGET%:*}"
@@ -1052,7 +1061,7 @@ interactive_add_rule() {
         local temp_forward_target="$FORWARD_TARGET"
         FORWARD_TARGET="$forward_address"
 
-        create_exit_rules_for_ports "$EXIT_LISTEN_PORT" "$forward_port"
+        create_exit_rules_for_ports "$EXIT_LISTEN_PORT" "$forward_port" || create_status=$?
 
         FORWARD_TARGET="$temp_forward_target"
     fi
@@ -1068,6 +1077,11 @@ interactive_add_rule() {
     TLS_CERT_PATH="$ORIG_TLS_CERT_PATH"
     TLS_KEY_PATH="$ORIG_TLS_KEY_PATH"
     PROTOCOL="$ORIG_PROTOCOL"
+
+    if [ "$create_status" -ne 0 ]; then
+        echo -e "${RED}✗ 创建转发配置失败，请检查配置目录写入权限和磁盘空间${NC}"
+        return 1
+    fi
 
     echo ""
 
@@ -1090,7 +1104,6 @@ delete_rule() {
     fi
 
     if read_rule_file "$rule_file"; then
-        # 保存规则信息用于后续同步
         local deleted_listen_port="$LISTEN_PORT"
         local deleted_remote_host="$REMOTE_HOST"
         local deleted_remote_port="$REMOTE_PORT"
@@ -1405,19 +1418,35 @@ export_config_with_view() {
 # 验证逻辑，返回配置目录路径供后续使用
 validate_config_package_content() {
     local package_file="$1"
-    local temp_dir=$(mktemp -d)
+    local temp_dir names entries
+    temp_dir=$(mktemp -d) || return 1
+
+    # 导出包只含目录和普通文件，拒绝路径越界及链接、特殊文件
+    if ! names=$(tar -tzf "$package_file" 2>/dev/null) ||
+       grep -qE '(^/|(^|/)\.\.(/|$))' <<< "$names" ||
+       ! entries=$(LC_ALL=C tar -tvzf "$package_file" 2>/dev/null) ||
+       grep -qE '^[^-d]' <<< "$entries"; then
+        rm -rf "$temp_dir"
+        return 1
+    fi
 
     if ! tar -xzf "$package_file" -C "$temp_dir" >/dev/null 2>&1; then
         rm -rf "$temp_dir"
         return 1
     fi
 
-    local config_dir=""
+    local config_dir="" dir rule_file
     for dir in "$temp_dir"/*; do
-        if [ -d "$dir" ] && [ -f "$dir/metadata.txt" ]; then
+        [ -d "$dir" ] && [ -f "$dir/metadata.txt" ] || continue
+        if [ -f "$dir/manager.conf" ]; then
             config_dir="$dir"
             break
         fi
+        for rule_file in "$dir/rules"/rule-*.conf; do
+            [ -f "$rule_file" ] || continue
+            config_dir="$dir"
+            break 2
+        done
     done
 
     if [ -z "$config_dir" ]; then
@@ -1449,32 +1478,37 @@ import_config_package() {
     fi
 
     echo -e "${YELLOW}正在验证配置包...${NC}"
-    local config_dir=$(validate_config_package_content "$package_path")
-    if [ $? -ne 0 ] || [ -z "$config_dir" ]; then
+    # 不用 local x=$(...)：local 的返回码覆盖函数退出码，校验失败会被掩盖
+    local config_dir
+    if ! config_dir=$(validate_config_package_content "$package_path"); then
         echo -e "${RED}无效的配置包文件${NC}"
         read -p "按回车键返回..."
-        return
+        return 1
     fi
 
     local selected_filename=$(basename "$package_path")
 
     echo -e "${BLUE}配置包: ${GREEN}$selected_filename${NC}"
 
+    # 配置包来自外部，metadata 按纯数据解析，不 source 执行
+    local meta_export_time="" meta_script_version="" meta_rules_count=""
     if [ -f "${config_dir}/metadata.txt" ]; then
-        source "${config_dir}/metadata.txt"
+        meta_export_time=$(grep '^EXPORT_TIME=' "${config_dir}/metadata.txt" | head -1 | cut -d= -f2-)
+        meta_script_version=$(grep '^SCRIPT_VERSION=' "${config_dir}/metadata.txt" | head -1 | cut -d= -f2-)
+        meta_rules_count=$(grep '^RULES_COUNT=' "${config_dir}/metadata.txt" | head -1 | cut -d= -f2-)
         echo -e "${BLUE}配置包信息：${NC}"
-        echo -e "  导出时间: ${GREEN}$EXPORT_TIME${NC}"
-        echo -e "  脚本版本: ${GREEN}$SCRIPT_VERSION${NC}"
-        echo -e "  规则数量: ${GREEN}$RULES_COUNT${NC}"
+        printf '  导出时间: %b%s%b\n' "$GREEN" "${meta_export_time}" "$NC"
+        printf '  脚本版本: %b%s%b\n' "$GREEN" "${meta_script_version}" "$NC"
+        printf '  规则数量: %b%s%b\n' "$GREEN" "${meta_rules_count:-未知}" "$NC"
         echo ""
     fi
 
     local current_rules=$(get_active_rules_count)
 
     echo -e "${YELLOW}当前规则数量: $current_rules${NC}"
-    echo -e "${YELLOW}即将导入规则: $RULES_COUNT${NC}"
+    printf '%b即将导入规则: %s%b\n' "$YELLOW" "${meta_rules_count:-未知}" "$NC"
     echo ""
-    echo -e "${RED}警告: 导入操作将覆盖所有现有配置！${NC}"
+    echo -e "${RED}警告: 导入将覆盖所有现有配置，请仅使用可信来源的配置包！${NC}"
     echo ""
 
     read -p "确认导入配置包？(y/n): " confirm
@@ -1497,27 +1531,48 @@ import_config_package() {
 
     init_rules_dir
 
-    local imported_count=0
+    local imported_count=0 restore_failed=false
 
     if [ -d "${config_dir}/rules" ]; then
         for rule_file in "${config_dir}/rules"/rule-*.conf; do
             if [ -f "$rule_file" ]; then
                 local rule_name=$(basename "$rule_file")
-                cp "$rule_file" "${RULES_DIR}/"
-                imported_count=$((imported_count + 1))
-                echo -e "${GREEN}✓${NC} 恢复规则文件: $rule_name"
+                if cp "$rule_file" "${RULES_DIR}/"; then
+                    imported_count=$((imported_count + 1))
+                    echo -e "${GREEN}✓${NC} 恢复规则文件: $rule_name"
+                else
+                    restore_failed=true
+                    echo -e "${RED}✗ 恢复规则文件失败: $rule_name${NC}"
+                fi
             fi
         done
     fi
 
+    local manager_restored=false
     if [ -f "${config_dir}/manager.conf" ]; then
-        cp "${config_dir}/manager.conf" "$MANAGER_CONF"
-        echo -e "${GREEN}✓${NC} 恢复管理配置文件"
+        if cp "${config_dir}/manager.conf" "$MANAGER_CONF"; then
+            manager_restored=true
+            echo -e "${GREEN}✓${NC} 恢复管理配置文件"
+        else
+            restore_failed=true
+            echo -e "${RED}✗ 恢复管理配置文件失败${NC}"
+        fi
     fi
 
     if [ -f "${config_dir}/health_status.conf" ]; then
-        cp "${config_dir}/health_status.conf" "$HEALTH_STATUS_FILE"
-        echo -e "${GREEN}✓${NC} 恢复健康状态文件"
+        if mkdir -p "$HEALTH_DIR" && cp "${config_dir}/health_status.conf" "$HEALTH_STATUS_FILE"; then
+            echo -e "${GREEN}✓${NC} 恢复健康状态文件"
+        else
+            restore_failed=true
+            echo -e "${RED}✗ 恢复健康状态文件失败${NC}"
+        fi
+    fi
+
+    if [ "$restore_failed" = true ]; then
+        rm -rf "$(dirname "$config_dir")"
+        echo -e "${RED}✗ 配置恢复不完整，未重启服务，请检查配置目录写入权限后重新导入${NC}"
+        read -p "按回车键返回..."
+        return 1
     fi
 
     if [ -f "${config_dir}/90-enable-MPTCP.conf" ]; then
@@ -1556,15 +1611,21 @@ import_config_package() {
 
     rm -rf "$(dirname "$config_dir")"
 
-    if [ $imported_count -gt 0 ]; then
+    if [ "$imported_count" -gt 0 ] || [ "$manager_restored" = true ]; then
         echo -e "${GREEN}✓ 配置导入成功，共恢复 $imported_count 个规则${NC}"
         echo ""
         echo -e "${YELLOW}正在重启服务以应用新配置...${NC}"
-        service_restart
+        if ! service_restart; then
+            echo -e "${RED}✗ 配置已导入，但服务重启失败，请检查配置${NC}"
+            read -p "按回车键返回..."
+            return 1
+        fi
         echo ""
         echo -e "${GREEN}配置导入完成！${NC}"
     else
         echo -e "${RED}✗ 配置导入失败${NC}"
+        read -p "按回车键返回..."
+        return 1
     fi
 
     echo ""
@@ -1622,7 +1683,6 @@ get_proxy_mode_color() {
     esac
 }
 
-# 初始化所有规则文件的Proxy字段
 init_proxy_fields() {
     init_rule_field "PROXY_MODE" "off"
 }
@@ -1955,7 +2015,7 @@ load_balance_management_menu() {
                         IFS=',' read -ra host_array <<< "$REMOTE_HOST"
                         for host in "${host_array[@]}"; do
                             local target="$host:$REMOTE_PORT"
-                            if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
+                            if ! list_contains "${port_groups[$port_key]}" "$target"; then
                                 if [ -z "${port_groups[$port_key]}" ]; then
                                     port_groups[$port_key]="$target"
                                 else
@@ -1965,7 +2025,7 @@ load_balance_management_menu() {
                         done
                     else
                         local target="$REMOTE_HOST:$REMOTE_PORT"
-                        if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
+                        if ! list_contains "${port_groups[$port_key]}" "$target"; then
                             if [ -z "${port_groups[$port_key]}" ]; then
                                 port_groups[$port_key]="$target"
                             else
@@ -1990,14 +2050,11 @@ load_balance_management_menu() {
                 local balance_mode="${port_balance_modes[$port_key]}"
                 local balance_info=$(get_balance_info_display "${port_groups[$port_key]}" "$balance_mode")
 
-                # 显示端口组标题
                 echo -e "  ${BLUE}端口 $port_key${NC}: ${GREEN}${port_configs[$port_key]}${NC} [$balance_info] - $target_count个服务器"
 
-                # 显示每个服务器及其权重
                 for ((i=0; i<target_count; i++)); do
                     local target="${targets[i]}"
 
-                    # 获取权重信息
                     local current_weight=1
                     local weights_str="${port_weights[$port_key]}"
 
@@ -2008,7 +2065,6 @@ load_balance_management_menu() {
                         current_weight="$weights_str"
                     fi
 
-                    # 计算权重百分比
                     local total_weight=0
                     if [ -n "$weights_str" ] && [[ "$weights_str" == *","* ]]; then
                         IFS=',' read -ra weight_array <<< "$weights_str"
@@ -2030,7 +2086,6 @@ load_balance_management_menu() {
                         percentage="100.0"
                     fi
 
-                    # 构建故障转移状态信息
                     local failover_info=""
                     if [ "$balance_mode" != "off" ] && [ "${port_failover_status[$port_key]}" = "true" ]; then
                         local health_status_file="/etc/realm/health/health_status.conf"
@@ -2083,19 +2138,15 @@ load_balance_management_menu() {
 
         case $choice in
             1)
-                # 切换负载均衡模式
                 switch_balance_mode
                 ;;
             2)
-                # 权重配置管理
                 weight_management_menu
                 ;;
             3)
-                # 开启/关闭故障转移
                 failover_management_menu
                 ;;
             0)
-                # 返回上级菜单
                 break
                 ;;
             *)
@@ -2113,8 +2164,6 @@ switch_balance_mode() {
         echo -e "${YELLOW}=== 切换负载均衡模式 ===${NC}"
         echo ""
 
-        # 按端口分组收集中转服务器规则
-        # 清空并重新初始化关联数组
         unset port_groups port_configs port_balance_modes
         declare -A port_groups
         declare -A port_configs
@@ -2125,7 +2174,6 @@ switch_balance_mode() {
                 if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ]; then
                     local port_key="$LISTEN_PORT"
 
-                    # 存储端口配置（使用第一个规则的配置作为基准）
                     if [ -z "${port_configs[$port_key]}" ]; then
                         port_configs[$port_key]="$RULE_NAME"
                         port_balance_modes[$port_key]="${BALANCE_MODE:-off}"
@@ -2133,12 +2181,10 @@ switch_balance_mode() {
 
                     # 正确处理REMOTE_HOST中可能包含多个地址的情况
                     if [[ "$REMOTE_HOST" == *","* ]]; then
-                        # REMOTE_HOST包含多个地址，分别添加
                         IFS=',' read -ra host_array <<< "$REMOTE_HOST"
                         for host in "${host_array[@]}"; do
                             local target="$host:$REMOTE_PORT"
-                            # 检查是否已存在，避免重复添加
-                            if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
+                            if ! list_contains "${port_groups[$port_key]}" "$target"; then
                                 if [ -z "${port_groups[$port_key]}" ]; then
                                     port_groups[$port_key]="$target"
                                 else
@@ -2147,10 +2193,8 @@ switch_balance_mode() {
                             fi
                         done
                     else
-                        # REMOTE_HOST是单个地址
                         local target="$REMOTE_HOST:$REMOTE_PORT"
-                        # 检查是否已存在，避免重复添加
-                        if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
+                        if ! list_contains "${port_groups[$port_key]}" "$target"; then
                             if [ -z "${port_groups[$port_key]}" ]; then
                                 port_groups[$port_key]="$target"
                             else
@@ -2162,24 +2206,20 @@ switch_balance_mode() {
             fi
         done
 
-        # 显示端口组列表（只显示有多个目标服务器的端口组）
         local has_balance_rules=false
         declare -a rule_ports
         declare -a rule_names
 
         for port_key in "${!port_groups[@]}"; do
-            # 计算目标服务器总数
             IFS=',' read -ra targets <<< "${port_groups[$port_key]}"
             local target_count=${#targets[@]}
 
-            # 只显示有多个目标服务器的端口组
             if [ "$target_count" -gt 1 ]; then
                 if [ "$has_balance_rules" = false ]; then
                     echo "请选择要切换负载均衡模式的规则组 (仅显示多目标服务器的规则组):"
                     has_balance_rules=true
                 fi
 
-                # 使用数字ID
                 local rule_number=$((${#rule_ports[@]} + 1))
                 rule_ports+=("$port_key")
                 rule_names+=("${port_configs[$port_key]}")
@@ -2226,14 +2266,12 @@ switch_balance_mode() {
             return
         fi
 
-        # 验证数字输入
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#rule_ports[@]} ]; then
             echo -e "${RED}无效的规则编号${NC}"
             read -p "按回车键继续..."
             continue
         fi
 
-        # 计算数组索引（从0开始）
         local selected_index=$((choice - 1))
         local selected_port="${rule_ports[$selected_index]}"
         local current_balance_mode="${port_balance_modes[$selected_port]}"
@@ -2272,7 +2310,6 @@ switch_balance_mode() {
                 ;;
         esac
 
-        # 更新选定端口组下所有相关规则的负载均衡模式
         local updated_count=0
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ]; then
@@ -2287,7 +2324,6 @@ switch_balance_mode() {
             echo -e "${GREEN}✓ 已将端口 $selected_port 的 $updated_count 个规则的负载均衡模式更新为: $mode_display${NC}"
             echo -e "${YELLOW}正在重启服务以应用更改...${NC}"
 
-            # 重启realm服务
             if service_restart; then
                 echo -e "${GREEN}✓ 服务重启成功，负载均衡模式已生效${NC}"
             else
@@ -2302,14 +2338,12 @@ switch_balance_mode() {
 }
 
 
-# 权重配置管理菜单
 weight_management_menu() {
     while true; do
         clear
         echo -e "${GREEN}=== 权重配置管理 ===${NC}"
         echo ""
 
-        # 按端口分组收集启用负载均衡的中转服务器规则
         declare -A port_groups
         declare -A port_configs
         declare -A port_weights
@@ -2332,12 +2366,10 @@ weight_management_menu() {
 
                     # 正确处理REMOTE_HOST中可能包含多个地址的情况
                     if [[ "$REMOTE_HOST" == *","* ]]; then
-                        # REMOTE_HOST包含多个地址，分别添加
                         IFS=',' read -ra host_array <<< "$REMOTE_HOST"
                         for host in "${host_array[@]}"; do
                             local target="$host:$REMOTE_PORT"
-                            # 检查是否已存在，避免重复添加
-                            if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
+                            if ! list_contains "${port_groups[$port_key]}" "$target"; then
                                 if [ -z "${port_groups[$port_key]}" ]; then
                                     port_groups[$port_key]="$target"
                                 else
@@ -2346,10 +2378,8 @@ weight_management_menu() {
                             fi
                         done
                     else
-                        # REMOTE_HOST是单个地址
                         local target="$REMOTE_HOST:$REMOTE_PORT"
-                        # 检查是否已存在，避免重复添加
-                        if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
+                        if ! list_contains "${port_groups[$port_key]}" "$target"; then
                             if [ -z "${port_groups[$port_key]}" ]; then
                                 port_groups[$port_key]="$target"
                             else
@@ -2361,25 +2391,21 @@ weight_management_menu() {
             fi
         done
 
-        # 检查是否有需要权重配置的端口组（多目标服务器）
         local has_balance_rules=false
         local rule_ports=()
         local rule_names=()
 
         for port_key in "${!port_groups[@]}"; do
-            # 计算目标服务器总数
             IFS=',' read -ra targets <<< "${port_groups[$port_key]}"
             local target_count=${#targets[@]}
             local balance_mode="${port_balance_modes[$port_key]}"
 
-            # 只显示有多个目标服务器的端口组
             if [ "$target_count" -gt 1 ] && [ "$balance_mode" != "off" ] && [ -n "$balance_mode" ]; then
                 if [ "$has_balance_rules" = false ]; then
                     echo "请选择要配置权重的规则组 (仅显示多目标服务器的负载均衡规则):"
                     has_balance_rules=true
                 fi
 
-                # 数字ID
                 local rule_number=$((${#rule_ports[@]} + 1))
                 rule_ports+=("$port_key")
                 rule_names+=("${port_configs[$port_key]}")
@@ -2412,24 +2438,20 @@ weight_management_menu() {
             break
         fi
 
-        # 验证数字输入
         if ! [[ "$selected_number" =~ ^[0-9]+$ ]] || [ "$selected_number" -lt 1 ] || [ "$selected_number" -gt ${#rule_ports[@]} ]; then
             echo -e "${RED}无效的规则编号${NC}"
             read -p "按回车键继续..."
             continue
         fi
 
-        # 计算数组索引（从0开始）
         local selected_index=$((selected_number - 1))
 
-        # 配置选中端口组的权重
         local selected_port="${rule_ports[$selected_index]}"
         local selected_name="${rule_names[$selected_index]}"
         configure_port_group_weights "$selected_port" "$selected_name" "${port_groups[$selected_port]}" "${port_weights[$selected_port]}"
     done
 }
 
-# 配置端口组权重
 configure_port_group_weights() {
     local port="$1"
     local rule_name="$2"
@@ -2440,25 +2462,21 @@ configure_port_group_weights() {
     echo -e "${GREEN}=== 权重配置: $rule_name ===${NC}"
     echo ""
 
-    # 解析目标服务器
     IFS=',' read -ra targets <<< "$targets_str"
     local target_count=${#targets[@]}
 
     echo "规则组: $rule_name (端口: $port)"
     echo "目标服务器列表:"
 
-    # 解析当前权重
     local current_weights
     if [ -n "$current_weights_str" ]; then
         IFS=',' read -ra current_weights <<< "$current_weights_str"
     else
-        # 默认相等权重
         for ((i=0; i<target_count; i++)); do
             current_weights[i]=1
         done
     fi
 
-    # 显示当前配置
     for ((i=0; i<target_count; i++)); do
         local weight="${current_weights[i]:-1}"
         echo -e "  $((i+1)). ${targets[i]} [当前权重: $weight]"
@@ -2483,31 +2501,25 @@ configure_port_group_weights() {
         return
     fi
 
-    # 预览配置
     preview_port_group_weight_config "$port" "$rule_name" "$weight_input" "${targets[@]}"
 }
 
-# 验证权重输入
 validate_weight_input() {
     local weight_input="$1"
     local expected_count="$2"
 
-    # 检查格式
     if ! [[ "$weight_input" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
         echo -e "${RED}权重格式错误，请使用数字和逗号，如: 2,1,3${NC}"
         return 1
     fi
 
-    # 解析权重数组
     IFS=',' read -ra weights <<< "$weight_input"
 
-    # 检查数量
     if [ "${#weights[@]}" -ne "$expected_count" ]; then
         echo -e "${RED}权重数量不匹配，需要 $expected_count 个权重值，实际输入 ${#weights[@]} 个${NC}"
         return 1
     fi
 
-    # 检查权重值范围
     for weight in "${weights[@]}"; do
         if [ "$weight" -lt 1 ] || [ "$weight" -gt 10 ]; then
             echo -e "${RED}权重值 $weight 超出范围，请使用 1-10 之间的数值${NC}"
@@ -2518,7 +2530,6 @@ validate_weight_input() {
     return 0
 }
 
-# 预览端口组权重配置
 preview_port_group_weight_config() {
     local port="$1"
     local rule_name="$2"
@@ -2541,7 +2552,6 @@ preview_port_group_weight_config() {
                 first_rule_file="$rule_file"
                 if [ -n "$WEIGHTS" ]; then
                     if [[ "$WEIGHTS" == *","* ]]; then
-                        # 完整权重字符串
                         IFS=',' read -ra current_weights <<< "$WEIGHTS"
                     else
                         # 单个权重值，需要查找完整权重
@@ -2557,14 +2567,12 @@ preview_port_group_weight_config() {
                         done
 
                         if [ "$found_full_weights" = false ]; then
-                            # 默认相等权重
                             for ((i=0; i<${#targets[@]}; i++)); do
                                 current_weights[i]=1
                             done
                         fi
                     fi
                 else
-                    # 默认相等权重
                     for ((i=0; i<${#targets[@]}; i++)); do
                         current_weights[i]=1
                     done
@@ -2574,16 +2582,13 @@ preview_port_group_weight_config() {
         fi
     done
 
-    # 解析新权重
     IFS=',' read -ra new_weights <<< "$weight_input"
 
-    # 计算总权重
     local total_weight=0
     for weight in "${new_weights[@]}"; do
         total_weight=$((total_weight + weight))
     done
 
-    # 显示变更详情
     for ((i=0; i<${#targets[@]}; i++)); do
         local old_weight="${current_weights[i]:-1}"
         local new_weight="${new_weights[i]}"
@@ -2605,7 +2610,6 @@ preview_port_group_weight_config() {
     read -p "确认应用此配置? [y/n]: " confirm
 
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        # 应用权重配置到该端口的所有相关规则
         apply_port_group_weight_config "$port" "$weight_input"
     else
         echo -e "${YELLOW}已取消配置更改${NC}"
@@ -2613,23 +2617,19 @@ preview_port_group_weight_config() {
     fi
 }
 
-# 应用端口组权重配置
 apply_port_group_weight_config() {
     local port="$1"
     local weight_input="$2"
 
     local updated_count=0
 
-    # 更新该端口的所有相关规则文件
     for rule_file in "${RULES_DIR}"/rule-*.conf; do
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
                 # 更新规则文件中的权重配置
-                # 对于第一个规则，存储完整权重；对于其他规则，存储对应的单个权重
                 local rule_index=0
                 local target_weight="$weight_input"
 
-                # 计算当前规则在同端口规则中的索引
                 for check_rule_file in "${RULES_DIR}"/rule-*.conf; do
                     if [ -f "$check_rule_file" ]; then
                         if read_rule_file "$check_rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
@@ -2641,29 +2641,23 @@ apply_port_group_weight_config() {
                     fi
                 done
 
-                # 根据规则索引确定要存储的权重
                 if [ $rule_index -eq 0 ]; then
-                    # 第一个规则存储完整权重
                     target_weight="$weight_input"
                 else
-                    # 其他规则存储对应位置的单个权重
                     IFS=',' read -ra weight_array <<< "$weight_input"
                     target_weight="${weight_array[$rule_index]:-1}"
                 fi
 
                 if grep -q "^WEIGHTS=" "$rule_file"; then
-                    # 更新现有的WEIGHTS字段
                     if command -v sed >/dev/null 2>&1; then
                         sed -i.bak "s/^WEIGHTS=.*/WEIGHTS=\"$target_weight\"/" "$rule_file" && rm -f "$rule_file.bak"
                     else
-                        # 如果没有sed，使用awk替代
                         awk -v new_weights="WEIGHTS=\"$target_weight\"" '
                             /^WEIGHTS=/ { print new_weights; next }
                             { print }
                         ' "$rule_file" > "$rule_file.tmp" && mv "$rule_file.tmp" "$rule_file"
                     fi
                 else
-                    # 如果没有WEIGHTS字段，在文件末尾添加
                     echo "WEIGHTS=\"$target_weight\"" >> "$rule_file"
                 fi
                 updated_count=$((updated_count + 1))

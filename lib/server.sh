@@ -1,5 +1,3 @@
-
-# 为中转服务器创建多端口规则
 create_nat_rules_for_ports() {
     local listen_ports="$1"
     local remote_ports="$2"
@@ -27,7 +25,7 @@ create_nat_rules_for_ports() {
             fi
         fi
 
-        create_single_nat_rule "$listen_port" "$remote_port"
+        create_single_nat_rule "$listen_port" "$remote_port" || return 1
     done
 
     if [ ${#LISTEN_PORT_ARRAY[@]} -gt 1 ]; then
@@ -62,7 +60,7 @@ create_exit_rules_for_ports() {
             fi
         fi
 
-        create_single_exit_rule "$listen_port" "$forward_port"
+        create_single_exit_rule "$listen_port" "$forward_port" || return 1
     done
 
     if [ ${#LISTEN_PORT_ARRAY[@]} -gt 1 ]; then
@@ -78,20 +76,21 @@ create_single_nat_rule() {
     local rule_file="${RULES_DIR}/rule-${rule_id}.conf"
     local rule_name="中转"
 
-    cat > "$rule_file" <<EOF
+    # 规则文件会被 source：自由文本必须转义，否则备注里的 " 或 $(...) 会变成可执行语句
+    cat > "$rule_file" <<EOF || return 1
 RULE_ID=$rule_id
-RULE_NAME="$rule_name"
+RULE_NAME=$(rule_quote "$rule_name")
 RULE_ROLE="1"
-SECURITY_LEVEL="$SECURITY_LEVEL"
-LISTEN_PORT="$listen_port"
-LISTEN_IP="${NAT_LISTEN_IP:-::}"
-THROUGH_IP="$NAT_THROUGH_IP"
-REMOTE_HOST="$REMOTE_IP"
-REMOTE_PORT="$remote_port"
-TLS_SERVER_NAME="$TLS_SERVER_NAME"
-WS_PATH="$WS_PATH"
-WS_HOST="$WS_HOST"
-RULE_NOTE="$RULE_NOTE"
+SECURITY_LEVEL=$(rule_quote "$SECURITY_LEVEL")
+LISTEN_PORT=$listen_port
+LISTEN_IP=$(rule_quote "${NAT_LISTEN_IP:-::}")
+THROUGH_IP=$(rule_quote "$NAT_THROUGH_IP")
+REMOTE_HOST=$(rule_quote "$REMOTE_IP")
+REMOTE_PORT=$remote_port
+TLS_SERVER_NAME=$(rule_quote "$TLS_SERVER_NAME")
+WS_PATH=$(rule_quote "$WS_PATH")
+WS_HOST=$(rule_quote "$WS_HOST")
+RULE_NOTE=$(rule_quote "$RULE_NOTE")
 ENABLED="true"
 CREATED_TIME="$(get_gmt8_time '+%Y-%m-%d %H:%M:%S')"
 
@@ -122,17 +121,17 @@ create_single_exit_rule() {
     local rule_name="服务端"
     local forward_target="$FORWARD_TARGET:$forward_port"
 
-    cat > "$rule_file" <<EOF
+    cat > "$rule_file" <<EOF || return 1
 RULE_ID=$rule_id
-RULE_NAME="$rule_name"
+RULE_NAME=$(rule_quote "$rule_name")
 RULE_ROLE="2"
-SECURITY_LEVEL="$SECURITY_LEVEL"
-LISTEN_PORT="$listen_port"
-FORWARD_TARGET="$forward_target"
-TLS_SERVER_NAME="$TLS_SERVER_NAME"
-WS_PATH="$WS_PATH"
-WS_HOST="$WS_HOST"
-RULE_NOTE="$RULE_NOTE"
+SECURITY_LEVEL=$(rule_quote "$SECURITY_LEVEL")
+LISTEN_PORT=$listen_port
+FORWARD_TARGET=$(rule_quote "$forward_target")
+TLS_SERVER_NAME=$(rule_quote "$TLS_SERVER_NAME")
+WS_PATH=$(rule_quote "$WS_PATH")
+WS_HOST=$(rule_quote "$WS_HOST")
+RULE_NOTE=$(rule_quote "$RULE_NOTE")
 ENABLED="true"
 CREATED_TIME="$(get_gmt8_time '+%Y-%m-%d %H:%M:%S')"
 
@@ -152,16 +151,15 @@ PROTOCOL="${PROTOCOL:-both}"
 EOF
 
     if [ "$SECURITY_LEVEL" = "tls_ca" ] || [ "$SECURITY_LEVEL" = "ws_tls_ca" ]; then
-        cat >> "$rule_file" <<EOF
-TLS_CERT_PATH="$TLS_CERT_PATH"
-TLS_KEY_PATH="$TLS_KEY_PATH"
+        cat >> "$rule_file" <<EOF || return 1
+TLS_CERT_PATH=$(rule_quote "$TLS_CERT_PATH")
+TLS_KEY_PATH=$(rule_quote "$TLS_KEY_PATH")
 EOF
     fi
 
     echo -e "${GREEN}✓ 服务端配置已创建 (ID: $rule_id) 端口: $listen_port->$forward_target${NC}"
 }
 
-# 内核版本检查，确保MPTCP功能可用性
 check_mptcp_support() {
     local kernel_version=$(uname -r | cut -d. -f1,2)
     local major=$(echo $kernel_version | cut -d. -f1)
@@ -248,7 +246,6 @@ EOF
     return 0
 }
 
-# 确保iproute2版本支持MPTCP功能
 upgrade_iproute2_for_mptcp() {
     local current_version=$(/usr/bin/ip -V 2>/dev/null | grep -oP 'iproute2-\K[^,\s]+' || echo "unknown")
     echo -e "${BLUE}当前iproute2版本: $current_version${NC}"
@@ -405,7 +402,6 @@ get_mptcp_endpoints_status() {
                 local id=$(echo "$line" | grep -oP 'id \K[0-9]+' || echo "")
                 local addr=$(echo "$line" | grep -oP '^[^ ]+' || echo "")
                 local dev=$(echo "$line" | grep -oP 'dev \K[^ ]+' || echo "")
-                # 解析MPTCP端点类型：脚本支持的三种模式
                 local flags=""
                 if echo "$line" | grep -q "subflow.*fullmesh"; then
                     flags="[subflow fullmesh]"
@@ -545,7 +541,6 @@ mptcp_display_dashboard() {
     echo ""
 }
 
-# MPTCP管理主菜单
 mptcp_management_menu() {
     # 初始化MPTCP字段（确保向后兼容）
     init_mptcp_fields
@@ -1130,7 +1125,6 @@ show_mptcp_detailed_status() {
     ip mptcp monitor || echo -e "  ${YELLOW}MPTCP事件监控不可用${NC}"
 }
 
-# 中转服务器交互配置
 configure_nat_server() {
     echo -e "${YELLOW}=== 中转服务器配置(不了解入口出口一般回车默认即可) ===${NC}"
     echo ""
@@ -1151,7 +1145,6 @@ while true; do
     fi
 done
 
-    # 检查是否为多端口
     local is_multi_port=false
     local port_status=0
 
@@ -1160,21 +1153,17 @@ done
         echo -e "${BLUE}检测到多端口配置，跳过端口占用检测${NC}"
         port_status=0  # 多端口不检测占用
     else
-        # 单端口检测
         check_port_usage "$NAT_LISTEN_PORT" "中转服务器监听"
         port_status=$?
     fi
 
-    # 如果端口被realm占用，跳过IP地址、协议、传输方式配置
     if [ $port_status -eq 1 ]; then
         echo -e "${BLUE}检测到端口已被realm占用，读取现有配置，直接进入出口服务器配置${NC}"
         echo ""
 
-        # 读取现有同端口规则的配置
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ]; then
                 if read_rule_file "$rule_file" && [ "$LISTEN_PORT" = "$NAT_LISTEN_PORT" ] && [ "$RULE_ROLE" = "1" ]; then
-                    # 找到同端口的中转服务器规则，使用其配置
                     NAT_LISTEN_IP="${LISTEN_IP}"
                     NAT_THROUGH_IP="${THROUGH_IP:-::}"
                     SECURITY_LEVEL="${SECURITY_LEVEL}"
@@ -1189,9 +1178,7 @@ done
             fi
         done
 
-        # 直接跳转到远程服务器配置
     else
-        # 清空可能残留的备注变量（新端口配置）
         RULE_NOTE=""
         echo ""
 
@@ -1199,12 +1186,10 @@ done
             read -p "自定义(指定)入口监听IP/网卡接口(客户端连接IP/网卡,回车默认全部监听 ::): " listen_ip_input
 
             if [ -z "$listen_ip_input" ]; then
-                # 使用默认值：双栈监听
                 NAT_LISTEN_IP="::"
                 echo -e "${GREEN}使用默认监听IP: :: (全部监听)${NC}"
                 break
             else
-                # 验证自定义输入
                 if validate_ip "$listen_ip_input"; then
                     NAT_LISTEN_IP="$listen_ip_input"
                     echo -e "${GREEN}监听IP设置为: $NAT_LISTEN_IP${NC}"
@@ -1230,7 +1215,6 @@ done
                 echo -e "${GREEN}使用默认出口IP: :: (全部监听)${NC}"
                 break
             else
-                # 验证自定义输入
                 if validate_ip "$through_ip_input"; then
                     NAT_THROUGH_IP="$through_ip_input"
                     echo -e "${GREEN}出口IP设置为: $NAT_THROUGH_IP${NC}"
@@ -1249,7 +1233,6 @@ done
         echo ""
     fi
 
-    # 配置远程服务器
     echo -e "${YELLOW}=== 出口服务器信息配置 ===${NC}"
     echo ""
 
@@ -1297,10 +1280,8 @@ done
         echo ""
     fi
 
-    # 测试连通性
     local connectivity_ok=true
 
-    # 检查是否为多端口
     if [[ "$REMOTE_PORT" == *","* ]]; then
         echo -e "${BLUE}多端口配置，跳过连通性测试${NC}"
     else
@@ -1313,10 +1294,8 @@ done
         fi
     fi
 
-    # 处理连接失败的情况
     if [ "$connectivity_ok" = false ]; then
 
-        # 检查是否为域名，给出DDNS特别提醒
         if ! validate_ip "$REMOTE_IP" && [[ "$REMOTE_IP" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
             echo -e "${YELLOW}检测到您使用的是域名地址，如果是DDNS域名：${NC}"
             echo -e "${YELLOW}确认域名和端口正确后，直接继续配置无需担心${NC}"
@@ -1466,9 +1445,8 @@ done
     echo ""
     echo -e "${BLUE}=== 规则备注配置 ===${NC}"
 
-    # 检查是否有现有备注（端口复用情况）
     if [ -n "$RULE_NOTE" ]; then
-        read -p "请输入新的备注(回车使用现有备注$RULE_NOTE): " new_note
+        read -r -p "请输入新的备注(回车使用现有备注$RULE_NOTE): " new_note
         new_note=$(echo "$new_note" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
         if [ -n "$new_note" ]; then
             RULE_NOTE="$new_note"
@@ -1477,8 +1455,7 @@ done
             echo -e "${GREEN}使用现有备注: $RULE_NOTE${NC}"
         fi
     else
-        read -p "请输入当前规则备注(可选，直接回车跳过): " RULE_NOTE
-        # 去除前后空格并限制长度
+        read -r -p "请输入当前规则备注(可选，直接回车跳过): " RULE_NOTE
         RULE_NOTE=$(echo "$RULE_NOTE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
         if [ -n "$RULE_NOTE" ]; then
             echo -e "${GREEN}备注设置为: $RULE_NOTE${NC}"
@@ -1490,7 +1467,6 @@ done
     echo ""
 }
 
-# 出口服务器交互配置
 configure_exit_server() {
     echo -e "${YELLOW}=== 解密并转发服务器配置 (双端Realm架构) ===${NC}"
     echo ""
@@ -1534,14 +1510,12 @@ configure_exit_server() {
 
     echo ""
 
-    # 配置转发目标
     echo "内循环本地转发目标或者远端服务器业务:"
     echo ""
     echo -e "${YELLOW}本地业务输入: IPv4: 127.0.0.1 | IPv6: ::1 | 双栈: localhost${NC}"
     echo -e "${YELLOW}远端业务输入:对应服务器IP ${NC}"
     echo ""
 
-    # 转发目标地址配置
     while true; do
         read -p "转发目标IP地址(默认:127.0.0.1): " input_target
         if [ -z "$input_target" ]; then
@@ -1559,7 +1533,6 @@ configure_exit_server() {
         fi
     done
 
-    # 转发目标端口配置
     local forward_port
     while true; do
         read -p "转发目标业务端口(多端口使用,逗号分隔): " forward_port
@@ -1571,19 +1544,15 @@ configure_exit_server() {
         fi
     done
 
-    # 组合完整的转发目标（包含端口）
     FORWARD_TARGET="$FORWARD_TARGET:$forward_port"
 
-    # 测试转发目标连通性
     local connectivity_ok=true
 
-    # 检查是否为多端口，多端口跳过连通性测试
     if [[ "$forward_port" == *","* ]]; then
         echo -e "${BLUE}多端口配置，跳过转发目标连通性测试${NC}"
     else
         echo -e "${YELLOW}正在测试转发目标连通性...${NC}"
 
-        # 解析并测试每个地址
         local addresses_part="${FORWARD_TARGET%:*}"
         local target_port="${FORWARD_TARGET##*:}"
         IFS=',' read -ra TARGET_ADDRESSES <<< "$addresses_part"
@@ -1599,11 +1568,9 @@ configure_exit_server() {
         done
     fi
 
-    # 只有单端口且连通性测试失败时才处理
     if ! $connectivity_ok && [[ "$forward_port" != *","* ]]; then
         echo -e "${RED}部分或全部转发目标连接测试失败，请确认代理服务是否正常运行${NC}"
 
-        # 检查是否包含域名，给出DDNS特别提醒
         local has_domain=false
         local addresses_part="${FORWARD_TARGET%:*}"
         IFS=',' read -ra TARGET_ADDRESSES <<< "$addresses_part"
@@ -1630,7 +1597,6 @@ configure_exit_server() {
         echo -e "${GREEN}✓ 所有转发目标连接测试成功！${NC}"
     fi
 
-    # 转发协议选择：服务端无端口复用分支，直接询问
     echo ""
     echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
     echo "请选择转发协议:"
@@ -1806,8 +1772,7 @@ configure_exit_server() {
     echo ""
     echo -e "${BLUE}=== 规则备注配置 ===${NC}"
 
-    read -p "请输入当前规则备注(可选，直接回车跳过): " RULE_NOTE
-    # 去除前后空格并限制长度
+    read -r -p "请输入当前规则备注(可选，直接回车跳过): " RULE_NOTE
     RULE_NOTE=$(echo "$RULE_NOTE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
     if [ -n "$RULE_NOTE" ]; then
         echo -e "${GREEN}备注设置为: $RULE_NOTE${NC}"

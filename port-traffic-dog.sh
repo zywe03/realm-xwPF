@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.4.3"
+readonly SCRIPT_VERSION="1.4.4"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -289,16 +289,21 @@ get_beijing_time() {
     TZ='Asia/Shanghai' date "$@"
 }
 
+# jq 失败时不能把空临时文件 mv 成配置：调用点在 if / || 里时 set -e 被抑制，必须显式检查返回码
 update_config() {
-    if [ "$1" = "--arg" ] || [ "$1" = "--argjson" ]; then
-        local jq_args=("$@")
-        local jq_expression="${jq_args[${#jq_args[@]}-1]}"
-        unset "jq_args[$(( ${#jq_args[@]} - 1 ))]"
-        jq "${jq_args[@]}" "$jq_expression" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
-    else
-        jq "$1" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
-    fi
-    mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    (
+        local tmp_file
+        exec 7>"${CONFIG_FILE}.lock" || return 1
+        flock -x 7 || return 1
+        tmp_file=$(mktemp "${CONFIG_FILE}.tmp.XXXXXX") || return 1
+
+        if jq -e "$@" "$CONFIG_FILE" > "$tmp_file" && [ -s "$tmp_file" ] &&
+           mv -fT -- "$tmp_file" "$CONFIG_FILE"; then
+            return 0
+        fi
+        rm -f -- "$tmp_file"
+        return 1
+    )
 }
 
 get_port_display_name() {
@@ -1658,7 +1663,7 @@ add_port_monitoring() {
     echo -e "${BLUE}=== 规则备注配置 ===${NC}"
     echo "请输入当前规则备注(可选，直接回车跳过):"
     echo "(多端口排序分别备注使用逗号,分隔)(只输入一个值，应用到所有端口):"
-    read -p "备注: " remark_input
+    read -r -p "备注: " remark_input
 
     local REMARKS=()
     if [ -n "$remark_input" ]; then
@@ -1709,8 +1714,8 @@ add_port_monitoring() {
         ck=$(derive_counter_key "$port")
         rid=$(derive_rule_id "$port")
 
+        # 备注与名称是自由文本：拼进 jq 程序时引号/反斜杠会让整个表达式解析失败
         local port_config="{
-            \"name\": \"$display_name\",
             \"enabled\": true,
             \"billing_mode\": \"$billing_mode\",
             \"bandwidth_limit\": {
@@ -1718,13 +1723,16 @@ add_port_monitoring() {
                 \"rate\": \"unlimited\"
             },
             \"quota\": $quota_config,
-            \"remark\": \"$remark\",
             \"counter_key\": \"$ck\",
             \"rule_id\": $rid,
             \"created_at\": \"$(get_beijing_time -Iseconds)\"
         }"
 
-        update_config ".ports.\"$port\" = $port_config"
+        if ! update_config --arg k "$port" --arg name "$display_name" --arg remark "$remark" \
+            ".ports[\$k] = ($port_config | .name = \$name | .remark = \$remark)"; then
+            echo -e "${RED}✗ $display_name 监控配置保存失败，已跳过该端口；请检查配置文件 JSON 格式和写入权限${NC}"
+            continue
+        fi
         add_nftables_rules "$port"
 
         if [ "$monthly_limit" != "unlimited" ]; then
@@ -2368,8 +2376,6 @@ remove_nftables_quota() {
     nft delete quota $family $table_name "$quota_name" 2>/dev/null || true
 }
 
-# 排除回环/ifb/容器虚拟网桥/隧道网卡
-
 validate_expiry_date() {
     local input="$1"
     if [ "$input" = "0" ]; then
@@ -2621,7 +2627,6 @@ apply_vps_tc_limit() {
     done
     [ $ok_count -eq 0 ] && return 1
 
-    # 整机入向限速建立 ifb0 链路
     if ! ip link show ifb0 >/dev/null 2>&1; then
         modprobe ifb numifbs=1 2>/dev/null || true
         ip link add ifb0 type ifb 2>/dev/null || true
@@ -2816,7 +2821,6 @@ remove_egress_filters() {
     done
 }
 
-# 检测内核 CAKE 支持（模块或内建）
 check_cake_support() {
     if modprobe sch_cake 2>/dev/null; then
         return 0
@@ -3008,7 +3012,6 @@ remove_tc_limit() {
 
     remove_ingress_shaping "$port"
 
-    # 无限速类时还原各网卡 htb 根
     for dev in $(list_shaping_interfaces); do
         remaining=$((remaining + $(tc class show dev $dev 2>/dev/null | grep -c "parent 1:1" || true)))
     done
@@ -3513,17 +3516,22 @@ import_config() {
     manage_configuration
 }
 
+# 先写临时文件再原子替换：curl -o 会直接截断目标，下载中断时半截文件会覆盖原文件
 download_with_sources() {
-    local url=$1
-    local output_file=$2
+    local url="$1" target="$2"
+    local tmp_dir tmp
+    tmp_dir=$(mktemp -d "${target}.download.XXXXXX") || return 1
+    tmp="$tmp_dir/file"
 
-    if curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$url" -o "$output_file" 2>/dev/null; then
-        if [ -s "$output_file" ]; then
-            echo -e "${GREEN}下载成功${NC}"
-            return 0
-        fi
+    if curl -fsSL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$url" -o "$tmp" 2>/dev/null && [ -s "$tmp" ] &&
+       mv -fT -- "$tmp" "$target"; then
+        rmdir "$tmp_dir"
+        echo -e "${GREEN}下载成功${NC}"
+        return 0
     fi
 
+    rm -f -- "$tmp"
+    rmdir "$tmp_dir"
     echo -e "${RED}下载失败${NC}"
     return 1
 }

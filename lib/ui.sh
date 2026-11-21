@@ -8,7 +8,6 @@ _update_sub_script() {
 
     mkdir -p "$(dirname "$target_path")"
 
-    # 本地缺文件时直接下载，不做版本比对
     if [ ! -f "$target_path" ]; then
         echo -e "${GREEN}正在下载${display_name}...${NC}"
         if download_from_sources "$script_url" "$target_path"; then
@@ -36,7 +35,6 @@ _update_sub_script() {
     return 0
 }
 
-# 按需更新OCR脚本
 download_realm_ocr_script() {
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xw_realm_OCR.sh"
     local target_path="/etc/realm/xw_realm_OCR.sh"
@@ -81,7 +79,6 @@ rules_management_menu() {
             done
         fi
 
-        # 服务状态：无规则且停止时提示先添加规则
         local status=$(svc_status_text)
         local total_count=$((enabled_count + disabled_count))
         if [ "$status" = "active" ]; then
@@ -137,7 +134,6 @@ rules_management_menu() {
                             fi
                             exit_count=$((exit_count + 1))
                             local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
-                            # 服务端服务器使用FORWARD_TARGET而不是REMOTE_HOST
                             local target_host="${FORWARD_TARGET%:*}"
                             local target_port="${FORWARD_TARGET##*:}"
                             local display_target=$(smart_display_target "$target_host")
@@ -306,12 +302,10 @@ rules_management_menu() {
     done
 }
 
-# 卸载函数
 uninstall_realm() {
     echo -e "${RED}⚠️  警告: 即将分阶段卸载 Realm 端口转发服务${NC}"
     echo ""
 
-    # 第一阶段：Realm 服务和配置
     echo -e "${YELLOW}=== 第一阶段：Realm 相关全部服务和配置文件 ===${NC}"
     read -p "确认删除 Realm 服务和配置？(y/n): " confirm_realm
     if [[ "$confirm_realm" =~ ^[Yy]$ ]]; then
@@ -323,7 +317,6 @@ uninstall_realm() {
     fi
 
     echo ""
-    # 第二阶段：脚本文件
     echo -e "${YELLOW}=== 第二阶段：xwPF 脚本相关全部文件 ===${NC}"
     read -p "确认删除脚本文件？(y/n): " confirm_script
     if [[ "$confirm_script" =~ ^[Yy]$ ]]; then
@@ -334,9 +327,7 @@ uninstall_realm() {
     fi
 }
 
-# 第一阶段：清理 Realm 相关
 uninstall_realm_stage_one() {
-    # 停止服务
     svc_is_active && svc_stop
     [ "$(svc_enabled_text)" = "enabled" ] && svc_disable
     # 停止健康检查服务（通过xwFailover.sh）
@@ -345,24 +336,19 @@ uninstall_realm_stage_one() {
     fi
     pgrep "realm" >/dev/null 2>&1 && { pkill -f "realm"; sleep 2; pkill -9 -f "realm" 2>/dev/null; }
 
-    # 清理文件
     cleanup_files_by_paths "$REALM_PATH" "$CONFIG_DIR" "$SYSTEMD_PATH" "/etc/realm"
     [ -f "/etc/init.d/realm" ] && rm -f "/etc/init.d/realm"
     cleanup_files_by_pattern "realm" "/var/log /tmp /var/tmp"
 
-    # 清理系统配置
     [ -f "/etc/sysctl.d/90-enable-MPTCP.conf" ] && rm -f "/etc/sysctl.d/90-enable-MPTCP.conf"
     command -v ip >/dev/null 2>&1 && ip mptcp endpoint flush 2>/dev/null
     svc_daemon_reload
 }
 
-# 第二阶段：清理脚本文件
 uninstall_script_files() {
-    # 清理主脚本和模块目录
     rm -f "$INSTALL_DIR/xwPF.sh"
     [ -d "$LIB_DIR" ] && rm -rf "$LIB_DIR"
 
-    # 清理 pf 快捷命令（symlink 或 wrapper）
     local exec_dirs=("/usr/local/bin" "/usr/bin" "/bin" "/opt/bin" "/root/bin")
     for dir in "${exec_dirs[@]}"; do
         [ -f "$dir/pf" ] && grep -q "xwPF" "$dir/pf" 2>/dev/null && rm -f "$dir/pf"
@@ -370,7 +356,6 @@ uninstall_script_files() {
     done
 }
 
-# 文件路径清理函数
 cleanup_files_by_paths() {
     for path in "$@"; do
         if [ -f "$path" ]; then
@@ -381,7 +366,6 @@ cleanup_files_by_paths() {
     done
 }
 
-# 文件模式清理函数
 cleanup_files_by_pattern() {
     local pattern="$1"
     local search_dirs="${2:-/}"
@@ -395,13 +379,10 @@ cleanup_files_by_pattern() {
     wait
 }
 
-# 显示转发目标地址（处理本地地址和多地址）
 smart_display_target() {
     local target="$1"
 
-    # 处理多地址情况
     if [[ "$target" == *","* ]]; then
-        # 分割多地址
         IFS=',' read -ra addresses <<< "$target"
         local display_addresses=()
 
@@ -410,13 +391,11 @@ smart_display_target() {
             local display_addr="$addr"
 
             if [[ "$addr" == "127.0.0.1" ]] || [[ "$addr" == "localhost" ]]; then
-                # IPv4本地地址时显示IPv4公网IP
                 local public_ipv4=$(get_public_ip ipv4)
                 if [ -n "$public_ipv4" ]; then
                     display_addr="$public_ipv4"
                 fi
             elif [[ "$addr" == "::1" ]]; then
-                # IPv6本地地址时显示IPv6公网IP
                 local public_ipv6=$(get_public_ip ipv6)
                 if [ -n "$public_ipv6" ]; then
                     display_addr="$public_ipv6"
@@ -426,7 +405,6 @@ smart_display_target() {
             display_addresses+=("$display_addr")
         done
 
-        # 重新组合地址
         local result=""
         for i in "${!display_addresses[@]}"; do
             if [ $i -gt 0 ]; then
@@ -436,9 +414,7 @@ smart_display_target() {
         done
         echo "$result"
     else
-        # 单地址处理
         if [[ "$target" == "127.0.0.1" ]] || [[ "$target" == "localhost" ]]; then
-            # IPv4本地地址时显示IPv4公网IP
             local public_ipv4=$(get_public_ip ipv4)
             if [ -n "$public_ipv4" ]; then
                 echo "$public_ipv4"
@@ -446,7 +422,6 @@ smart_display_target() {
                 echo "$target"
             fi
         elif [[ "$target" == "::1" ]]; then
-            # IPv6本地地址时显示IPv6公网IP
             local public_ipv6=$(get_public_ip ipv6)
             if [ -n "$public_ipv6" ]; then
                 echo "$public_ipv6"
@@ -464,21 +439,18 @@ show_brief_status() {
     echo ""
     echo -e "${BLUE}=== 当前状态 ===${NC}"
 
-    # 检查 realm 二进制文件是否存在
     if [ ! -f "${REALM_PATH}" ] || [ ! -x "${REALM_PATH}" ]; then
         echo -e " Realm状态：${RED} 未安装 ${NC}"
         echo -e "${YELLOW}请选择 1. 安装(更新)程序,脚本 ${NC}"
         return
     fi
 
-    # 检查配置文件是否存在
     if [ ! -f "$CONFIG_PATH" ]; then
         echo -e "${YELLOW}=== 配置缺失 ===${NC}"
         echo -e "${BLUE}Realm 已安装但配置缺失，请运行 安装配置/添加配置 来初始化配置${NC}"
         return
     fi
 
-    # 检查是否有多规则配置
     local has_rules=false
     local enabled_count=0
     local disabled_count=0
@@ -497,7 +469,6 @@ show_brief_status() {
         done
     fi
 
-    # 服务状态：无规则且停止时提示先添加规则
     local status=$(svc_status_text)
     local total_count=$((enabled_count + disabled_count))
     if [ "$status" = "active" ]; then
@@ -509,13 +480,10 @@ show_brief_status() {
     fi
 
     if [ "$has_rules" = true ] || [ "$disabled_count" -gt 0 ]; then
-        # 多规则模式
         local total_count=$((enabled_count + disabled_count))
         echo -e "配置模式: ${GREEN}多规则模式${NC} (${GREEN}$enabled_count${NC} 启用 / ${YELLOW}$disabled_count${NC} 禁用 / 共 $total_count 个)"
 
-        # 按服务器类型分组显示启用的规则
         if [ "$enabled_count" -gt 0 ]; then
-            # 中转服务器规则
             local has_relay_rules=false
             local relay_count=0
             for rule_file in $(get_sorted_rule_files); do
@@ -526,7 +494,6 @@ show_brief_status() {
                             has_relay_rules=true
                         fi
                         relay_count=$((relay_count + 1))
-                        # 显示详细的转发配置信息
                         local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
                         local display_target=$(smart_display_target "$REMOTE_HOST")
                         local rule_display_name="$RULE_NAME"
@@ -537,14 +504,12 @@ show_brief_status() {
                         if [ -n "$RULE_NOTE" ]; then
                             note_display=" | 备注: ${GREEN}$RULE_NOTE${NC}"
                         fi
-                        # 显示状态信息
                         get_rule_status_display "$security_display" "$note_display"
 
                     fi
                 fi
             done
 
-            # 服务端服务器规则
             local has_exit_rules=false
             local exit_count=0
             for rule_file in $(get_sorted_rule_files); do
@@ -558,7 +523,6 @@ show_brief_status() {
                             has_exit_rules=true
                         fi
                         exit_count=$((exit_count + 1))
-                        # 显示详细的转发配置信息
                         local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
                         # 服务端服务器使用FORWARD_TARGET而不是REMOTE_HOST
                         local target_host="${FORWARD_TARGET%:*}"
@@ -571,7 +535,6 @@ show_brief_status() {
                         if [ -n "$RULE_NOTE" ]; then
                             note_display=" | 备注: ${GREEN}$RULE_NOTE${NC}"
                         fi
-                        # 显示状态信息
                         get_rule_status_display "$security_display" "$note_display"
 
                     fi
@@ -579,21 +542,17 @@ show_brief_status() {
             done
         fi
 
-        # 显示禁用的规则（简要）
         if [ "$disabled_count" -gt 0 ]; then
             echo -e "${YELLOW}禁用的规则:${NC}"
             for rule_file in $(get_sorted_rule_files); do
                 if [ -f "$rule_file" ]; then
                     if read_rule_file "$rule_file" && [ "$ENABLED" = "false" ]; then
-                        # 根据规则角色使用不同的字段
                         if [ "$RULE_ROLE" = "2" ]; then
-                            # 服务端服务器使用FORWARD_TARGET
                             local target_host="${FORWARD_TARGET%:*}"
                             local target_port="${FORWARD_TARGET##*:}"
                             local display_target=$(smart_display_target "$target_host")
                             echo -e "  • ${WHITE}$RULE_NAME${NC}: $LISTEN_PORT → $display_target:$target_port (已禁用)"
                         else
-                            # 中转服务器使用REMOTE_HOST
                             local display_target=$(smart_display_target "$REMOTE_HOST")
                             local through_display="${THROUGH_IP:-::}"
                             echo -e "  • ${WHITE}$RULE_NAME${NC}: $LISTEN_PORT → $through_display → $display_target:$REMOTE_PORT (已禁用)"
@@ -608,7 +567,6 @@ show_brief_status() {
     echo ""
 }
 
-# 获取安全级别显示文本
 get_security_display() {
     local security_level="$1"
     local ws_path="$2"
@@ -649,7 +607,6 @@ get_gmt8_time() {
     TZ='GMT-8' date "$@"
 }
 
-# 按需更新故障转移管理脚本：比对远端版本，本地已是最新则跳过下载
 download_failover_script() {
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwFailover.sh"
     local target_path="/etc/realm/xwFailover.sh"
@@ -657,14 +614,12 @@ download_failover_script() {
     _update_sub_script "$script_url" "$target_path" "故障转移脚本"
 }
 
-# 按需更新中转网络链路测试脚本：比对远端版本，本地已是最新则跳过下载
 download_speedtest_script() {
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/speedtest.sh"
     local target_path="/etc/realm/speedtest.sh"
 
     _update_sub_script "$script_url" "$target_path" "测速脚本"
 }
-# 中转网络链路测试菜单
 speedtest_menu() {
     local speedtest_script="/etc/realm/speedtest.sh"
 
@@ -682,7 +637,6 @@ speedtest_menu() {
     read -p "按回车键返回主菜单..."
 }
 
-# 故障转移管理菜单
 failover_management_menu() {
     local failover_script="/etc/realm/xwFailover.sh"
 
@@ -692,16 +646,13 @@ failover_management_menu() {
         return 1
     fi
 
-    # 直接调用故障转移配置功能
     bash "$failover_script" toggle
 }
 
-# 端口流量狗
 port_traffic_dog_menu() {
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/port-traffic-dog.sh"
     local dog_script="/usr/local/bin/port-traffic-dog.sh"
 
-    # 脚本不存在或不可执行时才下载
     if [[ ! -f "$dog_script" || ! -x "$dog_script" ]]; then
         echo -e "${GREEN}正在下载端口流量狗脚本...${NC}"
         mkdir -p "$(dirname "$dog_script")"
@@ -794,9 +745,7 @@ show_menu() {
     done
 }
 
-# 内置清理机制
 cleanup_temp_files() {
-    # 清理缓存文件（>10MB截断保留5MB）
     local cache_file="/tmp/realm_path_cache"
     if [ -f "$cache_file" ]; then
         local size=$(stat -c%s "$cache_file" 2>/dev/null || stat -f%z "$cache_file" 2>/dev/null || echo 0)
@@ -805,26 +754,20 @@ cleanup_temp_files() {
         fi
     fi
 
-    # 清理过期标记文件（>5分钟）
     find /tmp -name "realm_config_update_needed" -mmin +5 -delete 2>/dev/null
 
-    # 清理realm临时文件（>60分钟）
     find /tmp -name "*realm*" -type f -mmin +60 ! -path "*/realm/config*" ! -path "*/realm/rules*" -delete 2>/dev/null
 }
 
-# ---- 主逻辑 ----
 main() {
     cleanup_temp_files
 
     detect_system
 
-    # 检查特殊参数
     if [ "$1" = "--generate-config-only" ]; then
-        # 只生成配置文件，不显示菜单
         generate_realm_config
         exit 0
     elif [ "$1" = "--restart-service" ]; then
-        # 重启服务接口（供外部调用）
         service_restart
         exit $?
     fi

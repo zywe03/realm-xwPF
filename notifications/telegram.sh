@@ -1,7 +1,5 @@
 #!/bin/bash
 
-# Telegram通知模块
-
 # 网络参数：防止重复source时的readonly冲突
 if [[ -z "${TELEGRAM_MAX_RETRIES:-}" ]]; then
     readonly TELEGRAM_MAX_RETRIES=2
@@ -40,7 +38,6 @@ send_telegram_message() {
             -d "parse_mode=HTML" \
             2>/dev/null)
 
-        # Telegram API成功响应的标准判断
         if echo "$response" | grep -q '"ok":true'; then
             if [ $retry_count -gt 0 ]; then
                 log_notification "Telegram消息发送成功 (重试第${retry_count}次后成功)"
@@ -68,7 +65,6 @@ telegram_send_status_notification() {
         return 1
     fi
 
-    # 使用HTML格式消息
     local server_name=$(jq -r '.notifications.telegram.server_name // ""' "$CONFIG_FILE" 2>/dev/null || echo "$(hostname)")
     local message=$(format_status_message "$server_name")
     if send_telegram_message "$message"; then
@@ -112,13 +108,11 @@ telegram_configure() {
         local status_notifications_enabled=$(jq -r '.notifications.telegram.status_notifications.enabled // false' "$CONFIG_FILE")
         local bot_token=$(jq -r '.notifications.telegram.bot_token // ""' "$CONFIG_FILE")
 
-        # 判断配置状态
         local config_status="[未配置]"
         if [ -n "$bot_token" ] && [ "$bot_token" != "" ] && [ "$bot_token" != "null" ]; then
             config_status="[已配置]"
         fi
 
-        # 判断开关状态
         local enable_status="[关闭]"
         if [ "$status_notifications_enabled" = "true" ]; then
             enable_status="[开启]"
@@ -215,7 +209,7 @@ telegram_configure_bot() {
     fi
 
     local default_server_name=$(hostname)
-    read -p "请输入服务器名称 (回车默认: $default_server_name): " server_name
+    read -r -p "请输入服务器名称 (回车默认: $default_server_name): " server_name
     if [ -z "$server_name" ]; then
         server_name="$default_server_name"
     fi
@@ -233,24 +227,26 @@ telegram_configure_bot() {
         return
     fi
 
-    # 原子性配置更新：确保配置完整性
-    update_config ".notifications.telegram.bot_token = \"$bot_token\" |
-        .notifications.telegram.chat_id = \"$chat_id\" |
-        .notifications.telegram.api_host = \"$api_host\" |
-        .notifications.telegram.server_name = \"$server_name\" |
+    echo -e "${BLUE}=== 状态通知间隔设置 ===${NC}"
+    local interval
+    interval=$(select_notification_interval)
+
+    # 值经 --arg 传入：server_name 等自由文本里的引号会破坏 jq 表达式
+    if ! update_config --arg token "$bot_token" --arg chat "$chat_id" --arg api "$api_host" --arg name "$server_name" --arg interval "$interval" \
+        ".notifications.telegram.bot_token = \$token |
+        .notifications.telegram.chat_id = \$chat |
+        .notifications.telegram.api_host = \$api |
+        .notifications.telegram.server_name = \$name |
         .notifications.telegram.enabled = true |
-        .notifications.telegram.status_notifications.enabled = true"
+        .notifications.telegram.status_notifications.enabled = true |
+        .notifications.telegram.status_notifications.interval = \$interval"; then
+        echo -e "${RED}✗ 基本配置保存失败，请检查配置文件 JSON 格式和写入权限${NC}"
+        return 1
+    fi
 
     echo -e "${GREEN}基本配置保存成功！${NC}"
-    echo
-
-    echo -e "${BLUE}=== 状态通知间隔设置 ===${NC}"
-    local interval=$(select_notification_interval)
-
-    update_config ".notifications.telegram.status_notifications.interval = \"$interval\""
     echo -e "${GREEN}状态通知间隔已设置为: $interval${NC}"
 
-    # 立即生效
     setup_telegram_notification_cron
 
     echo

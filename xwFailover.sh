@@ -1,7 +1,5 @@
 #!/bin/bash
 
-# 故障转移管理脚本
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -22,7 +20,6 @@ check_root() {
     fi
 }
 
-# 连通性检查
 check_connectivity() {
     local target="$1"
     local port="$2"
@@ -36,7 +33,6 @@ check_connectivity() {
     return $?
 }
 
-# 读取规则文件
 read_rule_file() {
     local rule_file="$1"
     if [ -f "$rule_file" ]; then
@@ -46,14 +42,12 @@ read_rule_file() {
     return 1
 }
 
-# 健康检查专用的读取规则文件函数
 read_rule_file_for_health_check() {
     local rule_file="$1"
     if [ ! -f "$rule_file" ]; then
         return 1
     fi
 
-    # 清空所有变量
     unset RULE_ID RULE_NAME RULE_ROLE LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT
     unset FORWARD_TARGET SECURITY_LEVEL
     unset TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST
@@ -65,13 +59,11 @@ read_rule_file_for_health_check() {
     return 0
 }
 
-# 查找文件路径
 find_file_path() {
     local filename="$1"
     local cache_file="/tmp/realm_path_cache"
     local cache_timeout=3600
 
-    # 常见位置直接检查
     local common_paths=(
         "/etc/realm/health/$filename"
         "/etc/realm/$filename"
@@ -88,7 +80,6 @@ find_file_path() {
         fi
     done
 
-    # 缓存检查
     if [ -f "$cache_file" ]; then
         local cache_age=$(($(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || echo 0)))
         if [ "$cache_age" -lt "$cache_timeout" ]; then
@@ -100,7 +91,6 @@ find_file_path() {
         fi
     fi
 
-    # 全局搜索
     local found_path=$(find /etc /var /opt /usr/local -name "$filename" -type f 2>/dev/null | head -1)
     if [ -n "$found_path" ]; then
         echo "$filename:$found_path" >> "$cache_file"
@@ -118,7 +108,6 @@ toggle_failover_mode() {
         echo -e "${YELLOW}=== 开启/关闭故障转移 ===${NC}"
         echo ""
 
-        # 按端口分组收集启用负载均衡的中转服务器规则
         unset port_groups port_configs port_failover_status
         declare -A port_groups
         declare -A port_configs
@@ -128,15 +117,12 @@ toggle_failover_mode() {
             if [ -f "$rule_file" ]; then
                 if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$ENABLED" = "true" ] && [ "$BALANCE_MODE" != "off" ]; then
                     local port_key="$LISTEN_PORT"
-                    # 存储端口配置（使用第一个规则的配置作为基准）
                     if [ -z "${port_configs[$port_key]}" ]; then
                         port_configs[$port_key]="$RULE_NAME"
                         port_failover_status[$port_key]="${FAILOVER_ENABLED:-false}"
                     fi
 
-                    # 正确处理REMOTE_HOST中可能包含多个地址的情况
                     if [[ "$REMOTE_HOST" == *","* ]]; then
-                        # 多个地址的情况
                         IFS=',' read -ra addresses <<< "$REMOTE_HOST"
                         for addr in "${addresses[@]}"; do
                             addr=$(echo "$addr" | xargs)  # 去除空格
@@ -148,7 +134,6 @@ toggle_failover_mode() {
                             fi
                         done
                     else
-                        # 单个地址的情况
                         local target="${REMOTE_HOST}:${REMOTE_PORT}"
                         if [ -z "${port_groups[$port_key]}" ]; then
                             port_groups[$port_key]="$target"
@@ -160,7 +145,6 @@ toggle_failover_mode() {
             fi
         done
 
-        # 显示可用的规则组
         local has_balance_rules=false
         local rule_ports=()
         local rule_names=()
@@ -182,7 +166,6 @@ toggle_failover_mode() {
                     rule_ports+=("$port_key")
                     rule_names+=("${port_configs[$port_key]}")
 
-                    # 获取故障转移状态
                     local failover_status="${port_failover_status[$port_key]}"
                     local status_text="关闭"
                     local status_color="${RED}"
@@ -229,7 +212,6 @@ toggle_failover_mode() {
         local selected_port="${rule_ports[$selected_index]}"
         local rule_name="${rule_names[$selected_index]}"
 
-        # 切换故障转移状态
         local current_status="${port_failover_status[$selected_port]}"
         local new_status="true"
         local action_text="开启"
@@ -241,15 +223,12 @@ toggle_failover_mode() {
             color="${RED}"
         fi
 
-        # 直接切换状态，无需确认
         echo -e "${BLUE}正在${action_text}故障转移功能...${NC}"
 
-        # 更新所有相关规则文件
         local updated_count=0
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ]; then
                 if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$selected_port" ]; then
-                    # 更新故障转移状态
                     if grep -q "^FAILOVER_ENABLED=" "$rule_file"; then
                         sed -i "s/^FAILOVER_ENABLED=.*/FAILOVER_ENABLED=\"$new_status\"/" "$rule_file"
                     else
@@ -270,16 +249,13 @@ toggle_failover_mode() {
             echo -e "  连接超时: ${GREEN}3秒${NC}"
         fi
 
-        # 重启服务以应用更改
         echo -e "${YELLOW}正在重启服务以应用故障转移设置...${NC}"
         restart_realm_service
 
-        # 管理健康检查服务
         if [ "$new_status" = "true" ]; then
             echo -e "${BLUE}正在启动健康检查服务...${NC}"
             start_health_check_service
         else
-            # 检查是否还有其他规则启用了故障转移
             local has_other_failover=false
             for rule_file in "${RULES_DIR}"/rule-*.conf; do
                 if [ -f "$rule_file" ]; then
@@ -299,21 +275,17 @@ toggle_failover_mode() {
         echo -e "${GREEN}✓ 故障转移设置已生效${NC}"
         echo ""
         read -p "按回车键继续..."
-        # 重新显示菜单以显示更新的状态
     done
 }
 
-# 健康检查服务管理
 start_health_check_service() {
     local health_dir="/etc/realm/health"
     local health_script="/etc/realm/health/health_check.sh"
     local health_timer="/etc/systemd/system/realm-health-check.timer"
     local health_service="/etc/systemd/system/realm-health-check.service"
 
-    # 创建健康检查目录
     mkdir -p "$health_dir"
 
-    # 创建健康检查脚本
     cat > "$health_script" << 'EOF'
 #!/bin/bash
 
@@ -379,7 +351,6 @@ read_rule_file_for_health_check() {
         return 1
     fi
 
-    # 清空所有变量
     unset RULE_ID RULE_NAME RULE_ROLE LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT
     unset FORWARD_TARGET SECURITY_LEVEL
     unset TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST
@@ -491,7 +462,6 @@ EOF
 
     chmod +x "$health_script"
 
-    # 创建systemd服务文件
     cat > "$health_service" << EOF
 [Unit]
 Description=Realm Health Check Service
@@ -510,7 +480,6 @@ SyslogIdentifier=realm-health
 WantedBy=multi-user.target
 EOF
 
-    # 创建systemd定时器
     cat > "$health_timer" << EOF
 [Unit]
 Description=Realm Health Check Timer
@@ -525,7 +494,6 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-    # 启用并启动定时器
     systemctl daemon-reload
     systemctl enable realm-health-check.timer >/dev/null 2>&1
     systemctl start realm-health-check.timer >/dev/null 2>&1
@@ -533,15 +501,12 @@ EOF
     echo -e "${GREEN}✓ 健康检查服务已启动${NC}"
 }
 
-# 停止健康检查服务
 stop_health_check_service() {
-    # 停止并禁用健康检查服务
     systemctl stop realm-health-check.timer >/dev/null 2>&1
     systemctl disable realm-health-check.timer >/dev/null 2>&1
     systemctl stop realm-health-check.service >/dev/null 2>&1
     systemctl disable realm-health-check.service >/dev/null 2>&1
 
-    # 删除服务文件
     rm -f "/etc/systemd/system/realm-health-check.timer"
     rm -f "/etc/systemd/system/realm-health-check.service"
     rm -f "/etc/realm/health/health_check.sh"
@@ -551,12 +516,10 @@ stop_health_check_service() {
     echo -e "${GREEN}✓ 健康检查服务已停止${NC}"
 }
 
-# 查看健康状态
 show_health_status() {
     echo -e "${YELLOW}=== 健康状态查看 ===${NC}"
     echo ""
 
-    # 动态查找健康状态文件
     local health_status_file=$(find_file_path "health_status.conf")
 
     if [ ! -f "$health_status_file" ]; then
@@ -567,10 +530,8 @@ show_health_status() {
     echo -e "${BLUE}健康状态文件: ${health_status_file}${NC}"
     echo ""
 
-    # 读取并显示健康状态
     local has_data=false
     while read -r line; do
-        # 跳过注释行和空行
         [[ "$line" =~ ^#.*$ ]] && continue
         [[ -z "$line" ]] && continue
 
@@ -580,13 +541,11 @@ show_health_status() {
         local rule_id=$(echo "$rule_target" | cut -d'|' -f1)
         local target=$(echo "$rule_target" | cut -d'|' -f2)
 
-        # 格式化时间
         local last_check_time="未知"
         if [ "$last_check" != "0" ] && [ -n "$last_check" ]; then
             last_check_time=$(date -d "@$last_check" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "未知")
         fi
 
-        # 状态颜色
         local status_color="${GREEN}"
         local status_text="健康"
         if [ "$status" = "failed" ]; then
@@ -620,15 +579,12 @@ show_help() {
     echo "  $0 help                   # 显示帮助信息"
 }
 
-# 重启realm服务（调用xwPF.sh的重启接口）
 restart_realm_service() {
     echo -e "${BLUE}调用主脚本的重启接口...${NC}"
 
-    # 直接调用主脚本的重启接口
     pf --restart-service
 }
 
-# 主函数
 main() {
     check_root
 
@@ -659,5 +615,4 @@ main() {
     esac
 }
 
-# 执行主函数
 main "$@"

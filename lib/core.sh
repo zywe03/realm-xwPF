@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="v2.3.3"
+SCRIPT_VERSION="v2.3.4"
 REALM_VERSION="v2.9.6"
 
 NAT_LISTEN_PORT=""
@@ -28,7 +28,14 @@ DISTRO=""        # debian | alpine | centos
 PKG_MGR=""       # apt-get | apk | yum/dnf
 INIT_SYSTEM=""   # systemd | openrc
 
-# 通用的字段初始化函数
+# 编码成规则文件里可安全 source 的单行赋值右值。不用 %q：非 UTF-8 locale 下它会把中文写成 $'\xxx' 字节转义
+rule_quote() {
+    local s="$1"
+    s=${s//\'/\'\\\'\'}
+    s=${s//$'\n'/\'\$\'\\n\'\'}
+    printf "'%s'" "$s"
+}
+
 init_rule_field() {
     local field_name="$1"
     local default_value="$2"
@@ -46,7 +53,6 @@ init_rule_field() {
     done
 }
 
-# 通用的服务重启函数
 restart_and_confirm() {
     local operation_name="$1"
     local batch_mode="$2"
@@ -69,6 +75,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 WHITE='\033[1;37m'
+GRAY='\033[0;90m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 REALM_PATH="/usr/local/bin/realm"
@@ -78,14 +86,16 @@ CONFIG_PATH="${CONFIG_DIR}/config.json"
 SYSTEMD_PATH="/etc/systemd/system/realm.service"
 RULES_DIR="${CONFIG_DIR}/rules"
 
-# 默认tls和host域名（加密解密需要相同SNI）
+HEALTH_DIR="${CONFIG_DIR}/health"
+HEALTH_STATUS_FILE="${HEALTH_DIR}/health_status.conf"
+
+# 客户端与服务端必须使用同一 SNI
 DEFAULT_SNI_DOMAIN="www.tesla.com"
 
-# 网络超时配置
 SHORT_CONNECT_TIMEOUT=5
 SHORT_MAX_TIMEOUT=7
 
-# 生成network配置
+# 保留 config.json 中已有的 proxy 字段，规则未覆盖时继续沿用
 generate_network_config() {
     local config_file="/etc/realm/config.json"
     local base_network='{
@@ -129,7 +139,6 @@ check_root() {
     fi
 }
 
-# 检测系统类型（支持 Debian/Ubuntu、Alpine、CentOS/RHEL）
 detect_system() {
     if [ ! -f /etc/os-release ]; then
         echo -e "${RED}错误: 无法识别系统（缺少 /etc/os-release）${NC}"
@@ -152,7 +161,6 @@ detect_system() {
             exit 1 ;;
     esac
 
-    # 包管理器
     if command -v apt-get >/dev/null 2>&1; then PKG_MGR="apt-get"
     elif command -v apk >/dev/null 2>&1; then PKG_MGR="apk"
     elif command -v dnf >/dev/null 2>&1; then PKG_MGR="dnf"
@@ -162,7 +170,6 @@ detect_system() {
         exit 1
     fi
 
-    # init 系统
     if command -v systemctl >/dev/null 2>&1; then INIT_SYSTEM="systemd"
     elif command -v rc-service >/dev/null 2>&1; then INIT_SYSTEM="openrc"
     else
@@ -171,7 +178,6 @@ detect_system() {
     fi
 }
 
-# 统一包安装分发
 _pkg_install() {
     case "$PKG_MGR" in
         apt-get)
@@ -225,7 +231,6 @@ check_dependencies() {
     manage_dependencies "check"
 }
 
-# 获取本机公网IP
 get_public_ip() {
     local ip_type="$1"
     local ip=""

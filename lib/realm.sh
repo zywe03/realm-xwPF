@@ -1,5 +1,3 @@
-
-# ---- 服务管理抽象层 ----
 svc_start()        { if [ "$INIT_SYSTEM" = "openrc" ]; then rc-service realm start;   else systemctl start realm;   fi; }
 svc_stop()         { if [ "$INIT_SYSTEM" = "openrc" ]; then rc-service realm stop;    else systemctl stop realm;    fi; }
 svc_restart()      { if [ "$INIT_SYSTEM" = "openrc" ]; then rc-service realm restart; else systemctl restart realm; fi; }
@@ -31,11 +29,9 @@ svc_logs() {
     else journalctl -u realm -f --no-pager; fi
 }
 
-# 检测虚拟化环境
 detect_virtualization() {
     local virt_type="物理机"
 
-    # 检测各种虚拟化技术
     if [ -f /proc/vz/version ]; then
         virt_type="OpenVZ"
     elif [ -d /proc/vz ]; then
@@ -67,22 +63,26 @@ detect_virtualization() {
 }
 
 
-# 统一下载函数
+# 先写临时文件再原子替换：curl -o 会直接截断目标，下载中断时半截文件会覆盖原文件
 download_from_sources() {
-    local url="$1"
-    local target_path="$2"
+    local url="$1" target="$2"
+    local tmp_dir tmp
+    tmp_dir=$(mktemp -d "${target}.download.XXXXXX") || return 1
+    tmp="$tmp_dir/file"
 
-    if curl -fsSL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$url" -o "$target_path"; then
+    if curl -fsSL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$url" -o "$tmp" 2>/dev/null && [ -s "$tmp" ] &&
+       mv -fT -- "$tmp" "$target"; then
+        rmdir "$tmp_dir"
         echo -e "${GREEN}✓ 下载成功${NC}" >&2
         return 0
-    else
-        echo -e "${RED}✗ 下载失败${NC}" >&2
-        return 1
     fi
+    rm -f -- "$tmp"
+    rmdir "$tmp_dir"
+    echo -e "${RED}✗ 下载失败${NC}" >&2
+    return 1
 }
 
 
-# 获取realm最新版本号
 get_latest_realm_version() {
     echo -e "${YELLOW}获取最新版本信息...${NC}" >&2
 
@@ -99,7 +99,6 @@ get_latest_realm_version() {
     echo "$latest_version"
 }
 
-# 智能重启realm服务
 restart_realm_service() {
     local was_running="$1"
     local is_update="${2:-false}"  # 是否为更新场景
@@ -113,23 +112,19 @@ restart_realm_service() {
             start_empty_service
         fi
     else
-        # 首次安装，启动空服务完成安装
         start_empty_service
     fi
 }
 
-# 比较realm版本并询问更新
 compare_and_ask_update() {
     local current_version="$1"
     local latest_version="$2"
 
-    # 提取当前版本号进行比较
     local current_ver=$(echo "$current_version" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     if [ -z "$current_ver" ]; then
         current_ver="v0.0.0"
     fi
 
-    # 统一版本格式（添加v前缀）
     if [[ ! "$current_ver" =~ ^v ]]; then
         current_ver="v$current_ver"
     fi
@@ -137,7 +132,6 @@ compare_and_ask_update() {
         latest_version="v$latest_version"
     fi
 
-    # 比较版本
     if [ "$current_ver" = "$latest_version" ]; then
         echo -e "${GREEN}✓ 当前版本已是最新版本${NC}"
         return 1
@@ -153,17 +147,16 @@ compare_and_ask_update() {
     fi
 }
 
-# 安全停止realm服务
 safe_stop_realm_service() {
     local service_was_running=false
 
     if svc_is_active; then
-        echo -e "${BLUE}检测到realm服务正在运行，正在停止服务...${NC}"
+        echo -e "${BLUE}检测到realm服务正在运行，正在停止服务...${NC}" >&2
         if svc_stop >/dev/null 2>&1; then
-            echo -e "${GREEN}✓ realm服务已停止${NC}"
+            echo -e "${GREEN}✓ realm服务已停止${NC}" >&2
             service_was_running=true
         else
-            echo -e "${RED}✗ 停止realm服务失败，无法安全更新${NC}"
+            echo -e "${RED}✗ 停止realm服务失败，已中止更新，请检查服务状态${NC}" >&2
             return 1
         fi
     fi
@@ -171,23 +164,18 @@ safe_stop_realm_service() {
     echo "$service_was_running"
 }
 
-# 安装 realm - 虚拟化适配
 install_realm() {
     echo -e "${GREEN}正在检查 realm 安装状态...${NC}"
 
-    # 检测虚拟化环境并显示
     local virt_env=$(detect_virtualization)
     echo -e "${BLUE}检测到虚拟化环境: ${GREEN}${virt_env}${NC}"
 
-    # 检查是否已安装realm
     if [ -f "${REALM_PATH}" ] && [ -x "${REALM_PATH}" ]; then
-        # 检查程序完整性（基本可执行性测试）
         if ! ${REALM_PATH} --help >/dev/null 2>&1; then
             echo -e "${YELLOW}检测到 realm 文件存在但可能已损坏，将重新安装...${NC}"
             # 损坏重装同样需要版本号，否则下载 URL 缺版本段而 404
             LATEST_VERSION=$(get_latest_realm_version)
         else
-            # 尝试获取版本信息
             local current_version=""
             local version_output=""
             if version_output=$(${REALM_PATH} --version 2>&1); then
@@ -202,10 +190,8 @@ install_realm() {
             echo -e "${GREEN}✓ 检测到已安装的 realm: ${current_version}${NC}"
             echo ""
 
-            # 获取最新版本号进行比较
             LATEST_VERSION=$(get_latest_realm_version)
 
-            # 比较版本并询问更新
             if ! compare_and_ask_update "$current_version" "$LATEST_VERSION"; then
                 return 0
             fi
@@ -213,11 +199,9 @@ install_realm() {
     else
         echo -e "${YELLOW}未检测到 realm 安装，开始下载安装...${NC}"
 
-        # 获取最新版本号
         LATEST_VERSION=$(get_latest_realm_version)
     fi
 
-    # 离线安装选项
     local download_file=""
     read -p "离线安装realm输入完整路径(回车默认自动下载): " local_package_path
     
@@ -264,13 +248,11 @@ install_realm() {
         fi
     fi
 
-    # 解压安装
     echo -e "${YELLOW}正在解压安装...${NC}"
 
-    local service_was_running=$(safe_stop_realm_service)
-    if [ $? -ne 0 ]; then
-        return 1
-    fi
+    # 不能写成 local x=$(...)：local 的返回码会覆盖函数退出码，停止失败会被当成成功继续覆盖二进制
+    local service_was_running
+    service_was_running=$(safe_stop_realm_service) || return 1
 
     local work_dir=$(dirname "$download_file")
     local archive_name=$(basename "$download_file")
@@ -300,16 +282,13 @@ generate_endpoints_from_rules() {
         return 0
     fi
 
-    # 确保规则ID排序是最优的
     reorder_rule_ids
 
-    # 健康状态读取（直接读取健康状态文件）
     declare -A health_status
     local health_status_file="/etc/realm/health/health_status.conf"
 
     if [ -f "$health_status_file" ]; then
         while read -r line; do
-            # 跳过注释行和空行
             [[ "$line" =~ ^#.*$ ]] && continue
             [[ -z "$line" ]] && continue
 
@@ -322,14 +301,12 @@ generate_endpoints_from_rules() {
         done < "$health_status_file"
     fi
 
-    # 按监听端口分组规则
     declare -A port_groups
     declare -A port_configs
     declare -A port_weights
     declare -A port_roles
     declare -A port_protocols
 
-    # 第一步：收集所有启用的规则并按端口分组（不进行故障转移过滤）
     declare -A port_rule_files
     for rule_file in "${RULES_DIR}"/rule-*.conf; do
         if [ -f "$rule_file" ]; then
@@ -337,47 +314,34 @@ generate_endpoints_from_rules() {
                 local port_key="$LISTEN_PORT"
                 local rule_protocol="${PROTOCOL:-both}"
 
-                # 存储端口配置（使用第一个规则的配置作为基准）
                 if [ -z "${port_configs[$port_key]}" ]; then
                     port_protocols[$port_key]="$rule_protocol"
-                    # 根据角色决定默认监听IP
                     local default_listen_ip
                     if [ "$RULE_ROLE" = "2" ]; then
-                        # 服务端服务器使用双栈监听
                         default_listen_ip="::"
                     else
-                        # 中转服务器使用动态输入的IP
                         default_listen_ip="${NAT_LISTEN_IP:-::}"
                     fi
                     port_configs[$port_key]="$SECURITY_LEVEL|$TLS_SERVER_NAME|$TLS_CERT_PATH|$TLS_KEY_PATH|$BALANCE_MODE|${LISTEN_IP:-$default_listen_ip}|$THROUGH_IP|$WS_PATH|$WS_HOST"
-                    # 存储权重配置和角色信息
                     port_weights[$port_key]="$WEIGHTS"
                     port_roles[$port_key]="$RULE_ROLE"
                 elif [ "${port_roles[$port_key]}" != "$RULE_ROLE" ]; then
-                    # 检测到同一端口有不同角色的规则，跳过此规则
                     echo -e "${YELLOW}警告: 端口 $port_key 已被角色 ${port_roles[$port_key]} 的规则占用，跳过角色 $RULE_ROLE 的规则${NC}" >&2
                     continue
                 elif [ "${port_protocols[$port_key]}" != "$rule_protocol" ]; then
-                    # 同端口不同转发协议，协议必须一致，跳过冲突规则
                     echo -e "${YELLOW}警告: 端口 $port_key 协议为 ${port_protocols[$port_key]}，跳过协议 $rule_protocol 的规则${NC}" >&2
                     continue
                 fi
 
-                # 收集目标：根据规则角色使用不同的字段
                 local targets_to_add=""
 
                 if [ "$RULE_ROLE" = "2" ]; then
-                    # 服务端服务器使用FORWARD_TARGET
                     targets_to_add="$FORWARD_TARGET"
                 else
-                    # 中转服务器：优先使用TARGET_STATES，否则使用REMOTE_HOST
                     if [ "$BALANCE_MODE" != "off" ] && [ -n "$TARGET_STATES" ]; then
-                        # 负载均衡模式且有TARGET_STATES，使用TARGET_STATES
                         targets_to_add="$TARGET_STATES"
                     else
-                        # 非负载均衡模式或无TARGET_STATES，使用REMOTE_HOST:REMOTE_PORT
                         if [[ "$REMOTE_HOST" == *","* ]]; then
-                            # REMOTE_HOST包含多个地址
                             IFS=',' read -ra host_list <<< "$REMOTE_HOST"
                             for host in "${host_list[@]}"; do
                                 host=$(echo "$host" | xargs)  # 去除空格
@@ -388,18 +352,16 @@ generate_endpoints_from_rules() {
                                 fi
                             done
                         else
-                            # REMOTE_HOST是单个地址
                             targets_to_add="$REMOTE_HOST:$REMOTE_PORT"
                         fi
                     fi
                 fi
 
-                # 将目标添加到端口组（避免重复）
                 if [ -n "$targets_to_add" ]; then
                     IFS=',' read -ra target_list <<< "$targets_to_add"
                     for target in "${target_list[@]}"; do
                         target=$(echo "$target" | xargs)  # 去除空格
-                        if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
+                        if ! list_contains "${port_groups[$port_key]}" "$target"; then
                             if [ -z "${port_groups[$port_key]}" ]; then
                                 port_groups[$port_key]="$target"
                             else
@@ -409,7 +371,6 @@ generate_endpoints_from_rules() {
                     done
                 fi
 
-                # 记录规则文件以便后续检查故障转移状态
                 if [ -z "${port_rule_files[$port_key]}" ]; then
                     port_rule_files[$port_key]="$rule_file"
                 fi
@@ -417,7 +378,6 @@ generate_endpoints_from_rules() {
         fi
     done
 
-    # 第二步：对每个端口组应用故障转移过滤
     for port_key in "${!port_groups[@]}"; do
         # 检查该端口的所有规则，只要有一个启用故障转移就应用过滤
         local failover_enabled="false"
@@ -432,12 +392,10 @@ generate_endpoints_from_rules() {
         done
 
         if [ "$failover_enabled" = "true" ]; then
-            # 应用故障转移过滤
             IFS=',' read -ra all_targets <<< "${port_groups[$port_key]}"
             local filtered_targets=""
             local filtered_indices=()
 
-            # 记录健康节点的索引位置
             for i in "${!all_targets[@]}"; do
                 local target="${all_targets[i]}"
                 local host="${target%:*}"
@@ -459,21 +417,17 @@ generate_endpoints_from_rules() {
                 filtered_indices=(0)
             fi
 
-            # 更新端口组为过滤后的目标
             port_groups[$port_key]="$filtered_targets"
 
-            # 同步调整权重配置以匹配过滤后的目标数量
             local original_weights="${port_weights[$port_key]}"
 
             if [ -n "$original_weights" ]; then
                 IFS=',' read -ra weight_array <<< "$original_weights"
                 local adjusted_weights=""
 
-                # 只保留健康节点对应的权重
                 for index in "${filtered_indices[@]}"; do
                     if [ $index -lt ${#weight_array[@]} ]; then
                         local weight="${weight_array[index]}"
-                        # 清理权重值（去除空格）
                         weight=$(echo "$weight" | tr -d ' ')
                         if [ -n "$adjusted_weights" ]; then
                             adjusted_weights="$adjusted_weights,$weight"
@@ -481,7 +435,6 @@ generate_endpoints_from_rules() {
                             adjusted_weights="$weight"
                         fi
                     else
-                        # 如果权重数组长度不足，使用默认权重1
                         if [ -n "$adjusted_weights" ]; then
                             adjusted_weights="$adjusted_weights,1"
                         else
@@ -490,44 +443,35 @@ generate_endpoints_from_rules() {
                     fi
                 done
 
-                # 更新权重配置
                 port_weights[$port_key]="$adjusted_weights"
             fi
         fi
     done
 
-    # 为每个端口组生成endpoint配置
     for port_key in "${!port_groups[@]}"; do
         if [ $count -gt 0 ]; then
             endpoints="$endpoints,"
         fi
 
-        # 解析端口配置
         IFS='|' read -r security_level tls_server_name tls_cert_path tls_key_path balance_mode listen_ip through_ip ws_path ws_host <<< "${port_configs[$port_key]}"
-        # 如果没有listen_ip字段（向后兼容），根据角色使用对应的默认值
         if [ -z "$listen_ip" ]; then
             local role="${port_roles[$port_key]:-1}"
             if [ "$role" = "2" ]; then
-                # 服务端服务器使用双栈监听
                 listen_ip="::"
             else
-                # 中转服务器使用动态输入的IP
                 listen_ip="${NAT_LISTEN_IP:-::}"
             fi
         fi
 
-        # 如果没有through_ip字段（向后兼容），使用默认值
         if [ -z "$through_ip" ]; then
             through_ip="::"
         fi
 
-        # 解析目标地址
         IFS=',' read -ra targets <<< "${port_groups[$port_key]}"
         local main_target="${targets[0]}"
         local main_host="${main_target%:*}"
         local main_port="${main_target##*:}"
 
-        # 构建extra_remotes
         local extra_remotes=""
         if [ ${#targets[@]} -gt 1 ]; then
             for ((i=1; i<${#targets[@]}; i++)); do
@@ -538,7 +482,6 @@ generate_endpoints_from_rules() {
             done
         fi
 
-        # 生成endpoint配置
         local listen_field=""
         if validate_ip "$listen_ip"; then
             listen_field="\"listen\": \"${listen_ip}:${port_key}\""
@@ -552,15 +495,12 @@ generate_endpoints_from_rules() {
             ${listen_field},
             \"remote\": \"${main_target}\""
 
-        # 添加extra_remotes（如果有多个目标）
         if [ -n "$extra_remotes" ]; then
             endpoint_config="$endpoint_config,
             \"extra_remotes\": [$extra_remotes]"
         fi
 
-        # 添加负载均衡配置（如果有多个目标且设置了负载均衡）
         if [ -n "$extra_remotes" ] && [ -n "$balance_mode" ] && [ "$balance_mode" != "off" ]; then
-            # 生成权重配置
             local weight_config=""
             local rule_weights="${port_weights[$port_key]}"
 
@@ -568,7 +508,6 @@ generate_endpoints_from_rules() {
                 # 使用存储的权重（已在故障转移过滤中处理）
                 weight_config=$(echo "$rule_weights" | sed 's/,/, /g')
             else
-                # 使用默认相等权重
                 for ((i=0; i<${#targets[@]}; i++)); do
                     if [ -n "$weight_config" ]; then
                         weight_config="$weight_config, "
@@ -581,7 +520,6 @@ generate_endpoints_from_rules() {
             \"balance\": \"$balance_mode: $weight_config\""
         fi
 
-        # 添加through字段（仅中转服务器）
         local role="${port_roles[$port_key]:-1}"  # 使用存储的角色，默认为中转服务器
         if [ "$role" = "1" ] && [ -n "$through_ip" ] && [ "$through_ip" != "::" ]; then
             if validate_ip "$through_ip"; then
@@ -593,7 +531,6 @@ generate_endpoints_from_rules() {
             fi
         fi
 
-        # 添加传输配置 - 使用存储的规则角色信息
         local transport_config=$(get_transport_config "$security_level" "$tls_server_name" "$tls_cert_path" "$tls_key_path" "$role" "$ws_path" "$ws_host")
         if [ -n "$transport_config" ]; then
             endpoint_config="$endpoint_config,
@@ -610,7 +547,6 @@ generate_endpoints_from_rules() {
             # 临时保存会被 read_rule_file 覆盖的变量状态
             local saved_vars=$(declare -p RULE_ID RULE_NAME PROTOCOL MPTCP_MODE PROXY_MODE 2>/dev/null || true)
 
-            # 读取该端口对应的规则文件（一次拿到协议/MPTCP/Proxy 三个字段）
             if read_rule_file "$rule_file_for_port"; then
                 local rule_protocol="${PROTOCOL:-both}"
                 local mptcp_mode="${MPTCP_MODE:-off}"
@@ -626,7 +562,6 @@ generate_endpoints_from_rules() {
                         ;;
                 esac
 
-                # MPTCP 字段
                 local send_mptcp="false"
                 local accept_mptcp="false"
                 case "$mptcp_mode" in
@@ -643,7 +578,6 @@ generate_endpoints_from_rules() {
                     network_fields="${network_fields}\"accept_mptcp\": $accept_mptcp"
                 fi
 
-                # Proxy 字段
                 local send_proxy="false"
                 local accept_proxy="false"
                 local send_proxy_version="2"
@@ -665,7 +599,6 @@ generate_endpoints_from_rules() {
                 fi
             fi
 
-            # 恢复变量状态（如果有保存的话）
             if [ -n "$saved_vars" ]; then
                 eval "$saved_vars" 2>/dev/null || true
             fi
@@ -697,7 +630,6 @@ generate_realm_config() {
 
     init_rules_dir
 
-    # 检查是否有启用的规则
     local has_rules=false
     local enabled_count=0
 
@@ -719,32 +651,25 @@ generate_realm_config() {
         return 0
     fi
 
-    # 生成基于规则的配置
     echo -e "${BLUE}找到 $enabled_count 个启用的规则，生成多规则配置${NC}"
 
-    # 获取所有启用规则的endpoints
     local endpoints=$(generate_endpoints_from_rules)
 
-    # 使用统一模板生成多规则配置
     generate_complete_config "$endpoints"
 
     echo -e "${GREEN}✓ 多规则配置文件已生成${NC}"
     echo -e "${BLUE}配置详情: $enabled_count 个启用的转发规则${NC}"
 
-    # 显示规则摘要
     for rule_file in "${RULES_DIR}"/rule-*.conf; do
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ]; then
-                # 根据规则角色使用不同的字段
                 if [ "$RULE_ROLE" = "2" ]; then
-                    # 服务端服务器使用FORWARD_TARGET
                     local target_host="${FORWARD_TARGET%:*}"
                     local target_port="${FORWARD_TARGET##*:}"
                     local display_target=$(smart_display_target "$target_host")
                     local display_ip="::"
                     echo -e "  ${GREEN}$RULE_NAME${NC}: ${LISTEN_IP:-$display_ip}:$LISTEN_PORT → $display_target:$target_port"
                 else
-                    # 中转服务器使用REMOTE_HOST
                     local display_target=$(smart_display_target "$REMOTE_HOST")
                     local display_ip="${NAT_LISTEN_IP:-::}"
                     local through_display="${THROUGH_IP:-::}"
@@ -834,7 +759,6 @@ EOF
     svc_start >/dev/null 2>&1
 }
 
-# 安装和配置流程
 smart_install() {
     echo -e "${GREEN}=== xwPF Realm 一键脚本智能安装 $SCRIPT_VERSION ===${NC}"
     echo ""
@@ -843,10 +767,8 @@ smart_install() {
     echo -e "${BLUE}检测到系统: ${GREEN}$OS $VER${NC}"
     echo ""
 
-    # 安装依赖
     manage_dependencies "install"
 
-    # 脚本更新（首次安装跳过，菜单进入则检查版本）
     if [ "${_SKIP_SCRIPT_UPDATE:-}" != "1" ]; then
         echo -e "${YELLOW}正在检查脚本更新...${NC}"
         local remote_ver=$(curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT \
@@ -870,7 +792,6 @@ smart_install() {
         echo ""
     fi
 
-    # 下载最新的 realm 主程序
     if install_realm; then
         echo -e "${GREEN}=== 安装完成！ ===${NC}"
         echo -e "${YELLOW}输入快捷命令 ${GREEN}pf${YELLOW} 进入脚本交互界面${NC}"
@@ -880,7 +801,6 @@ smart_install() {
     fi
 }
 
-# 服务管理 - 停止
 service_stop() {
     echo -e "${YELLOW}正在停止 Realm 服务...${NC}"
 
@@ -895,13 +815,11 @@ service_stop() {
 service_restart() {
     echo -e "${YELLOW}正在重启 Realm 服务...${NC}"
 
-    # 重排序规则ID以保持最优排序
     echo -e "${BLUE}正在规则排序...${NC}"
     if reorder_rule_ids; then
         echo -e "${GREEN}✓ 规则排序优化完成${NC}"
     fi
 
-    # 重新生成配置文件
     echo -e "${BLUE}重新生成配置文件...${NC}"
     generate_realm_config
 
